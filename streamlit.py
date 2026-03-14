@@ -213,21 +213,21 @@ def compute_contributions(
 def generate_return_paths(years, mean_return, return_std, phi=-0.15):
 
     log_mean = np.log(1 + mean_return) - 0.5 * return_std ** 2
-    
+
     # Noise std is scaled so unconditional variance matches return_std
     noise_std = return_std * np.sqrt(1 - phi ** 2)
-    
+
     log_returns = np.zeros((SIMULATIONS, years))
-    
+
     # Initialize first year
     log_returns[:, 0] = np.random.normal(log_mean, return_std, SIMULATIONS)
-    
+
     # Simulate forward with mean reversion
     for t in range(1, years):
         noise = np.random.normal(0, noise_std, SIMULATIONS)
         log_returns[:, t] = log_mean + phi * (log_returns[:, t-1] - log_mean) + noise
-    
-    return np.exp(log_returns)  # gross returns, never below 0def generate_return_paths(years, mean_return, return_std):
+
+    return np.exp(log_returns)  # gross returns, never below 0
 
 # -----------------------------
 # FAST FINAL PORTFOLIOS
@@ -250,9 +250,7 @@ def compute_final_portfolios(
 
     contribution_component = (contributions * future_growth).sum(axis=1)
 
-    inheritance_component = 0
-
-    return start_component + contribution_component + inheritance_component
+    return start_component + contribution_component
 
 # -----------------------------
 # FULL PATHS (for charts)
@@ -317,8 +315,6 @@ def simulate_salary_model(
         contributions,
         growth
     )
-    
-    # print(f"inheritance_year={inheritance_year} | median_portfolio={np.median(portfolios):,.0f} | success={np.mean(portfolios >= target_portfolio):.3f} | start_salary={start_salary:,.0f}")
 
     wealth_paths = simulate_wealth_paths(
         current_portfolio,
@@ -428,10 +424,9 @@ with c2:
 
     target_success = st.slider(
         "Target Success Rate",
-        0.5,
-        0.99,
-        0.70
-    )
+        50, 99, 70,
+        format="%d%%"
+    ) / 100
 
 with c3:
     st.subheader("Inheritance")
@@ -461,30 +456,25 @@ with st.expander("Market Assumptions"):
     with m1:
         mean_return = st.slider(
             "Mean Return",
-            0.0,
-            0.15,
-            0.04,
-            step=0.005,
-            format="%.3f"
-        )
+            0.0, 15.0, 4.0,
+            step=0.5,
+            format="%.1f%%"
+        ) / 100
 
     with m2:
         return_std = st.slider(
             "Return Volatility",
-            0.0,
-            0.30,
-            0.2
-        )
+            0, 30, 20,
+            format="%d%%"
+        ) / 100
 
     with m3:
         salary_growth = st.slider(
             "Salary Growth",
-            0.0,
-            0.10,
-            0.02,
-            step=0.005,
-            format="%.3f"
-        )
+            0.0, 10.0, 2.0,
+            step=0.5,
+            format="%.1f%%"
+        ) / 100
 
 match_rate = 0.06
 
@@ -525,6 +515,9 @@ if run:
         inheritance_year
     )
 
+    years_axis = list(range(years + 1))
+    contrib_x = years_axis[1:]
+
 # -----------------------------
 # RESULTS METRICS
 # -----------------------------
@@ -555,9 +548,6 @@ if run:
     # -----------------------------
     # SALARY PATH
     # -----------------------------
-    years_axis = list(range(years + 1))
-
-    contrib_x = years_axis[1:]
 
     fig_salary = go.Figure()
 
@@ -570,8 +560,9 @@ if run:
     fig_salary.update_layout(
         title="Salary Path",
         xaxis_title="Year",
-        yaxis_title="Salary ($)",
-        xaxis=dict(dtick=1)
+        yaxis_title="Salary",
+        xaxis=dict(dtick=1),
+        yaxis=dict(tickprefix="$", tickformat=",.0f")
     )
 
     st.plotly_chart(fig_salary, use_container_width=True)
@@ -600,14 +591,13 @@ if run:
         fig.update_layout(
             title="Ending Portfolio Distribution",
             xaxis_title="Portfolio Value",
-            yaxis_title="Frequency"
+            yaxis_title="Frequency",
+            xaxis=dict(tickprefix="$", tickformat=",.0f"),
         )
 
         st.plotly_chart(fig, use_container_width=True)
 
     with r1c2:
-
-
 
         fig4 = go.Figure()
 
@@ -620,12 +610,12 @@ if run:
         fig4.update_layout(
             title="Contributions by Year",
             xaxis_title="Year",
-            yaxis_title="Contribution ($)",
-            xaxis=dict(dtick=1)
+            yaxis_title="Contribution",
+            xaxis=dict(dtick=1),
+            yaxis=dict(tickprefix="$", tickformat=",.0f")
         )
 
         st.plotly_chart(fig4, use_container_width=True)
-
 
     # -----------------------------
     # WEALTH PATHS + FI PROBABILITY
@@ -636,7 +626,6 @@ if run:
     with r2c1:
 
         if wealth_paths is None:
-            # ensure downstream code always gets an ndarray of shape (sims, years+1)
             wealth_paths = np.zeros((1, years + 1))
 
         p10 = np.percentile(wealth_paths, 10, axis=0)
@@ -668,7 +657,8 @@ if run:
         fig2.update_layout(
             title="Monte Carlo Wealth Paths",
             xaxis_title="Year",
-            yaxis_title="Portfolio"
+            yaxis_title="Portfolio Value",
+            yaxis=dict(tickprefix="$", tickformat=",.0f")
         )
 
         st.plotly_chart(fig2, use_container_width=True)
@@ -693,7 +683,10 @@ if run:
             title="Probability of Reaching Target Portfolio",
             xaxis_title="Year",
             yaxis_title="Probability",
-            yaxis_range=[0, 1]
+            yaxis=dict(
+                range=[0, 1],
+                tickformat=".0%"
+            )
         )
 
         st.plotly_chart(fig3, use_container_width=True)
