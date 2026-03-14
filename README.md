@@ -45,19 +45,13 @@ The simulator solves a root-finding problem: it searches for the salary at which
 | Inheritance      | Expected lump-sum inheritance in today's dollars.         |
 | Inheritance Year | The year within the horizon when the inheritance arrives. |
 
-### Salary
-
-| Parameter            | Description                                          |
-| -------------------- | ---------------------------------------------------- |
-| Annual Salary Growth | Real (inflation-adjusted) annual salary growth rate. |
-| Employer Match Rate  | 401k employer match as a fraction of gross salary.   |
-
 ### Market Assumptions
 
-| Parameter         | Description                                       |
-| ----------------- | ------------------------------------------------- |
-| Mean Return       | Expected annualized real return on the portfolio. |
-| Return Volatility | Annualized standard deviation of log returns.     |
+| Parameter         | Description                                          |
+| ----------------- | ---------------------------------------------------- |
+| Mean Return       | Expected annualized real return on the portfolio.    |
+| Return Volatility | Annualized standard deviation of log returns.        |
+| Salary Growth     | Real (inflation-adjusted) annual salary growth rate. |
 
 ## Tax Model
 
@@ -123,7 +117,7 @@ With default parameters (σ=0.20, μ≈0.019), this is roughly 49 years. Over an
 - Social Security income is not modeled
 - State income taxes are not modeled
 - The model assumes you save 100% of after-tax surplus above spending — no lifestyle inflation
-- Returns are i.i.d. lognormal — no mean reversion, regime switching, or sequence-of-returns modeling beyond volatility
+- Returns are lognormal with weak AR(1) mean reversion (φ=−0.15) — no regime switching or sequence-of-returns modeling beyond volatility
 - The 401k limit, HSA limit, and tax brackets reflect current law and will need updating over time
 - Inheritance is treated as a certain event in a known year — probability of inheritance is not modeled
 

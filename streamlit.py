@@ -3,7 +3,7 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.optimize import brentq
 
-SIMULATIONS = 20000
+SIMULATIONS = 10000
 
 # -----------------------------
 # TAX PARAMETERS
