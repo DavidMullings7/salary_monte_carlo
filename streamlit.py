@@ -1,0 +1,699 @@
+import streamlit as st
+import numpy as np
+import plotly.graph_objects as go
+from scipy.optimize import brentq
+
+SIMULATIONS = 20000
+
+# -----------------------------
+# TAX PARAMETERS
+# -----------------------------
+
+STANDARD_DEDUCTION = 30000
+
+BRACKETS = [
+ (23850, 0.10),
+ (96950, 0.12),
+ (206700, 0.22),
+ (394600, 0.24),
+ (501050, 0.32),
+ (751600, 0.35),
+ (float("inf"), 0.37),
+]
+
+SOCIAL_SECURITY_RATE = 0.062
+SOCIAL_SECURITY_WAGE_BASE = 168600
+
+MEDICARE_RATE = 0.0145
+ADDITIONAL_MEDICARE_RATE = 0.009
+ADDITIONAL_MEDICARE_THRESHOLD = 250000
+
+K401_LIMIT = 24500
+HSA_LIMIT = 4500
+
+# -----------------------------
+# TAX CALCULATIONS
+# -----------------------------
+
+def federal_tax(taxable_income):
+
+    tax = 0
+    prev_limit = 0
+
+    for limit, rate in BRACKETS:
+
+        if taxable_income > limit:
+            tax += (limit - prev_limit) * rate
+            prev_limit = limit
+        else:
+            tax += (taxable_income - prev_limit) * rate
+            break
+
+    return max(tax, 0)
+
+
+def tax_liability(income):
+    taxable = max(0, income - STANDARD_DEDUCTION)
+    return federal_tax(taxable)
+
+
+# Closed-form Shapley (2 incomes)
+def shapley_tax(incomes):
+
+    a, b = incomes
+
+    tax_a_first = tax_liability(a) - tax_liability(0)
+    tax_a_second = tax_liability(a + b) - tax_liability(b)
+
+    tax_b_first = tax_liability(b) - tax_liability(0)
+    tax_b_second = tax_liability(a + b) - tax_liability(a)
+
+    shapley_a = 0.5 * (tax_a_first + tax_a_second)
+    shapley_b = 0.5 * (tax_b_first + tax_b_second)
+
+    return [shapley_a, shapley_b]
+
+# -----------------------------
+# FICA
+# -----------------------------
+
+def fica_tax(wages):
+
+    ss_tax = min(wages, SOCIAL_SECURITY_WAGE_BASE) * SOCIAL_SECURITY_RATE
+    medicare_tax = wages * MEDICARE_RATE
+
+    additional_medicare = max(
+        0,
+        wages - ADDITIONAL_MEDICARE_THRESHOLD
+    ) * ADDITIONAL_MEDICARE_RATE
+
+    return ss_tax + medicare_tax + additional_medicare
+
+
+# -----------------------------
+# AFTER TAX INCOME
+# -----------------------------
+
+def personal_after_tax_income(
+    salary,
+    partner_income,
+    k401,
+    hsa
+):
+
+    pretax = k401 + hsa
+
+    incomes = [
+        salary - pretax,
+        partner_income
+    ]
+
+    tax_split = shapley_tax(incomes)
+
+    my_federal_tax = tax_split[0]
+
+    payroll_tax = fica_tax(salary)
+
+    after_tax_income = (
+        salary
+        - pretax
+        - my_federal_tax
+        - payroll_tax
+    )
+
+    return after_tax_income
+
+# -----------------------------
+# SALARY PATH
+# -----------------------------
+
+def generate_salary_path(start_salary, years, salary_growth):
+
+    return np.array([
+        start_salary * (1 + salary_growth) ** y
+        for y in range(years)
+    ])
+
+# -----------------------------
+# PRETAX CONTRIBUTION SOLVER
+# -----------------------------
+
+def max_pretax_contribution(
+    salary,
+    partner_income,
+    spending,
+):
+
+    def objective(pretax):
+
+        net_income = personal_after_tax_income(
+            salary,
+            partner_income,
+            pretax,
+            0
+        )
+
+        return net_income - spending
+
+    try:
+        pretax = brentq(objective, 0, K401_LIMIT + HSA_LIMIT)
+    except ValueError:
+        pretax = K401_LIMIT + HSA_LIMIT
+
+    return pretax
+
+# -----------------------------
+# CONTRIBUTIONS
+# -----------------------------
+
+def compute_contributions(
+    salaries,
+    partner_income,
+    spending,
+    match_rate
+):
+
+    years = len(salaries)
+    contributions = np.zeros(years)
+
+    for y in range(years):
+
+        salary = salaries[y]
+
+        pretax = max_pretax_contribution(
+            salary,
+            partner_income,
+            spending
+        )
+
+        k401 = min(pretax, K401_LIMIT)
+        hsa = min(max(0, pretax - k401), HSA_LIMIT)
+
+        net_income = personal_after_tax_income(
+            salary,
+            partner_income,
+            k401,
+            hsa
+        )
+
+        match = salary * match_rate
+        excess = net_income - spending
+
+        if excess < 0:
+            return None
+
+        contributions[y] = pretax + match + excess
+
+    return contributions
+
+# -----------------------------
+# RETURN PATHS
+# -----------------------------
+
+def generate_return_paths(years, mean_return, return_std, phi=-0.15):
+
+    log_mean = np.log(1 + mean_return) - 0.5 * return_std ** 2
+    
+    # Noise std is scaled so unconditional variance matches return_std
+    noise_std = return_std * np.sqrt(1 - phi ** 2)
+    
+    log_returns = np.zeros((SIMULATIONS, years))
+    
+    # Initialize first year
+    log_returns[:, 0] = np.random.normal(log_mean, return_std, SIMULATIONS)
+    
+    # Simulate forward with mean reversion
+    for t in range(1, years):
+        noise = np.random.normal(0, noise_std, SIMULATIONS)
+        log_returns[:, t] = log_mean + phi * (log_returns[:, t-1] - log_mean) + noise
+    
+    return np.exp(log_returns)  # gross returns, never below 0def generate_return_paths(years, mean_return, return_std):
+
+# -----------------------------
+# FAST FINAL PORTFOLIOS
+# -----------------------------
+
+def compute_final_portfolios(
+    current_portfolio,
+    contributions,
+    growth
+):
+
+    cum_growth = np.cumprod(growth, axis=1)
+
+    start_component = current_portfolio * cum_growth[:, -1]
+
+    reverse_growth = np.cumprod(growth[:, ::-1], axis=1)[:, ::-1]
+
+    future_growth = np.ones_like(growth)
+    future_growth[:, :-1] = reverse_growth[:, 1:]
+
+    contribution_component = (contributions * future_growth).sum(axis=1)
+
+    inheritance_component = 0
+
+    return start_component + contribution_component + inheritance_component
+
+# -----------------------------
+# FULL PATHS (for charts)
+# -----------------------------
+
+def simulate_wealth_paths(
+    current_portfolio,
+    contributions,
+    growth
+):
+
+    sims, years = growth.shape
+
+    wealth = np.zeros((sims, years + 1))
+    wealth[:,0] = current_portfolio
+
+    for y in range(years):
+        wealth[:,y+1] = wealth[:,y] * growth[:,y] + contributions[y]
+
+    return wealth
+
+
+# -----------------------------
+# SALARY MODEL
+# -----------------------------
+
+def simulate_salary_model(
+    start_salary,
+    partner_income,
+    years,
+    spending,
+    current_portfolio,
+    target_portfolio,
+    growth,
+    salary_growth,
+    match_rate,
+    inheritance,
+    inheritance_year
+):
+
+    salaries = generate_salary_path(
+        start_salary,
+        years,
+        salary_growth
+    )
+
+    contributions = compute_contributions(
+        salaries,
+        partner_income,
+        spending,
+        match_rate
+    )
+
+    if contributions is None:
+        return None,0,None,None,None
+
+    if inheritance_year is not None:
+        contributions[inheritance_year - 1] += inheritance
+
+    portfolios = compute_final_portfolios(
+        current_portfolio,
+        contributions,
+        growth
+    )
+    
+    # print(f"inheritance_year={inheritance_year} | median_portfolio={np.median(portfolios):,.0f} | success={np.mean(portfolios >= target_portfolio):.3f} | start_salary={start_salary:,.0f}")
+
+    wealth_paths = simulate_wealth_paths(
+        current_portfolio,
+        contributions,
+        growth
+    )
+
+    success_rate = np.mean(portfolios >= target_portfolio)
+    contributions[inheritance_year - 1] -= inheritance
+
+    return portfolios,success_rate,salaries,contributions,wealth_paths
+
+# -----------------------------
+# SALARY SOLVER
+# -----------------------------
+
+def solve_required_salary(
+    partner_income,
+    years,
+    spending,
+    current_portfolio,
+    target_portfolio,
+    mean_return,
+    return_std,
+    salary_growth,
+    match_rate,
+    target_success,
+    inheritance,
+    inheritance_year
+):
+
+    np.random.seed(42)
+    growth = generate_return_paths(
+        years,
+        mean_return,
+        return_std
+    )
+
+    def objective(salary):
+
+        _, success, _, _, _ = simulate_salary_model(
+            salary,
+            partner_income,
+            years,
+            spending,
+            current_portfolio,
+            target_portfolio,
+            growth,
+            salary_growth,
+            match_rate,
+            inheritance,
+            inheritance_year
+        )
+
+        return success - target_success
+
+    salary = brentq(objective,50000,600000)
+
+    return salary,growth
+
+# -----------------------------
+# STREAMLIT UI
+# -----------------------------
+
+st.set_page_config(layout="wide")
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
+st.title("Retirement Salary Monte Carlo Dashboard")
+
+# -----------------------------
+# DOCUMENTATION
+# -----------------------------
+with open("README.md") as f:
+    st.sidebar.markdown(f.read())
+
+# -----------------------------
+# INPUT PANEL
+# -----------------------------
+
+st.header("Inputs")
+
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    st.subheader("Household")
+
+    partner_income = st.number_input("Partner Income", 0, 1000000, 300000)
+    spending = st.number_input("Annual Spending", 0, 200000, 50000)
+
+    current_portfolio = st.number_input(
+        "Current Portfolio", 0, 1000000, 250000
+    )
+
+with c2:
+    st.subheader("Goal")
+
+    target_portfolio = st.number_input(
+        "Target Portfolio", 0, 10000000, 4000000
+    )
+
+    years = st.slider("Years", 5, 40, 25)
+
+    target_success = st.slider(
+        "Target Success Rate",
+        0.5,
+        0.99,
+        0.70
+    )
+
+with c3:
+    st.subheader("Inheritance")
+
+    inheritance = st.number_input(
+        "Inheritance",
+        0,
+        5000000,
+        1500000
+    )
+
+    inheritance_year = st.number_input(
+        "Inheritance Year",
+        1,
+        years,
+        years
+    )
+
+# -----------------------------
+# ADVANCED MARKET SETTINGS
+# -----------------------------
+
+with st.expander("Market Assumptions"):
+
+    m1, m2, m3 = st.columns(3)
+
+    with m1:
+        mean_return = st.slider(
+            "Mean Return",
+            0.0,
+            0.15,
+            0.04,
+            step=0.005,
+            format="%.3f"
+        )
+
+    with m2:
+        return_std = st.slider(
+            "Return Volatility",
+            0.0,
+            0.30,
+            0.2
+        )
+
+    with m3:
+        salary_growth = st.slider(
+            "Salary Growth",
+            0.0,
+            0.10,
+            0.02,
+            step=0.005,
+            format="%.3f"
+        )
+
+match_rate = 0.06
+
+# -----------------------------
+# SOLVE BUTTON
+# -----------------------------
+
+run = st.button("Solve Required Salary")
+
+if run:
+
+    required_salary,growth = solve_required_salary(
+        partner_income,
+        years,
+        spending,
+        current_portfolio,
+        target_portfolio,
+        mean_return,
+        return_std,
+        salary_growth,
+        match_rate,
+        target_success,
+        inheritance,
+        inheritance_year
+    )
+
+    portfolios,success,salaries,contributions,wealth_paths = simulate_salary_model(
+        required_salary,
+        partner_income,
+        years,
+        spending,
+        current_portfolio,
+        target_portfolio,
+        growth,
+        salary_growth,
+        match_rate,
+        inheritance,
+        inheritance_year
+    )
+
+# -----------------------------
+# RESULTS METRICS
+# -----------------------------
+
+    st.header("Results")
+
+    m1, m2, m3 = st.columns(3)
+
+    with m1:
+        st.metric(
+            "Required Salary",
+            f"${required_salary:,.0f}"
+        )
+
+    with m2:
+        st.metric(
+            "Success Rate",
+            f"{success:.1%}"
+        )
+
+    with m3:
+        median_portfolio = np.median(portfolios) if portfolios is not None else 0
+        st.metric(
+            "Median Ending Portfolio",
+            f"${median_portfolio:,.0f}"
+        )
+
+    # -----------------------------
+    # SALARY PATH
+    # -----------------------------
+    years_axis = list(range(years + 1))
+
+    contrib_x = years_axis[1:]
+
+    fig_salary = go.Figure()
+
+    fig_salary.add_trace(go.Scatter(
+        x=contrib_x,
+        y=salaries,
+        name="Salary"
+    ))
+
+    fig_salary.update_layout(
+        title="Salary Path",
+        xaxis_title="Year",
+        yaxis_title="Salary ($)",
+        xaxis=dict(dtick=1)
+    )
+
+    st.plotly_chart(fig_salary, use_container_width=True)
+
+    # -----------------------------
+    # HISTOGRAM + CONTRIBUTIONS
+    # -----------------------------
+
+    r1c1, r1c2 = st.columns(2)
+
+    with r1c1:
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Histogram(
+            x=portfolios,
+            nbinsx=50
+        ))
+
+        fig.add_vline(
+            x=target_portfolio,
+            line_dash="dash",
+            line_color="red"
+        )
+
+        fig.update_layout(
+            title="Ending Portfolio Distribution",
+            xaxis_title="Portfolio Value",
+            yaxis_title="Frequency"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with r1c2:
+
+
+
+        fig4 = go.Figure()
+
+        fig4.add_trace(go.Scatter(
+            x=contrib_x,
+            y=contributions,
+            name="Contributions"
+        ))
+
+        fig4.update_layout(
+            title="Contributions by Year",
+            xaxis_title="Year",
+            yaxis_title="Contribution ($)",
+            xaxis=dict(dtick=1)
+        )
+
+        st.plotly_chart(fig4, use_container_width=True)
+
+
+    # -----------------------------
+    # WEALTH PATHS + FI PROBABILITY
+    # -----------------------------
+
+    r2c1, r2c2 = st.columns(2)
+
+    with r2c1:
+
+        if wealth_paths is None:
+            # ensure downstream code always gets an ndarray of shape (sims, years+1)
+            wealth_paths = np.zeros((1, years + 1))
+
+        p10 = np.percentile(wealth_paths, 10, axis=0)
+        p50 = np.percentile(wealth_paths, 50, axis=0)
+        p90 = np.percentile(wealth_paths, 90, axis=0)
+
+        fig2 = go.Figure()
+
+        fig2.add_trace(go.Scatter(
+            x=years_axis,
+            y=p50,
+            name="Median"
+        ))
+
+        fig2.add_trace(go.Scatter(
+            x=years_axis,
+            y=p10,
+            name="10th Percentile",
+            line=dict(dash="dot")
+        ))
+
+        fig2.add_trace(go.Scatter(
+            x=years_axis,
+            y=p90,
+            name="90th Percentile",
+            line=dict(dash="dot")
+        ))
+
+        fig2.update_layout(
+            title="Monte Carlo Wealth Paths",
+            xaxis_title="Year",
+            yaxis_title="Portfolio"
+        )
+
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with r2c2:
+
+        prob_by_year = np.mean(
+            wealth_paths >= target_portfolio,
+            axis=0
+        )
+
+        fig3 = go.Figure()
+
+        fig3.add_trace(go.Scatter(
+            x=years_axis,
+            y=prob_by_year,
+            mode="lines",
+            name="Probability of FI"
+        ))
+
+        fig3.update_layout(
+            title="Probability of Reaching Target Portfolio",
+            xaxis_title="Year",
+            yaxis_title="Probability",
+            yaxis_range=[0, 1]
+        )
+
+        st.plotly_chart(fig3, use_container_width=True)
