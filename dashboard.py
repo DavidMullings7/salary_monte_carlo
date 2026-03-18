@@ -392,9 +392,8 @@ st.divider()
 # -----------------------------
 
 fig_salary = go.Figure()
-fig_salary.add_trace(go.Scatter(
+fig_salary.add_trace(go.Bar(
     x=contrib_x, y=salaries, name="Salary",
-    line=dict(width=2), fill="tozeroy"
 ))
 fig_salary.update_layout(
     title="Salary Path",
