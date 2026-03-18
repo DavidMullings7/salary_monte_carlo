@@ -350,7 +350,7 @@ with st.sidebar:
 # -----------------------------
 
 st.title("Retirement Salary Monte Carlo")
-st.caption("Solve for the minimum salary required to reach a target portfolio with a given probability.")
+st.caption("Solve for the minimum starting salary required to reach a target portfolio with a given probability.")
 
 if not run:
     st.info("Configure inputs in the sidebar, then click **Solve Required Salary**.")
