@@ -53,6 +53,23 @@ The simulator solves a root-finding problem: it searches for the salary at which
 | Return Volatility | Annualized standard deviation of log returns.        |
 | Salary Growth     | Real (inflation-adjusted) annual salary growth rate. |
 
+### Tax & Plan Settings
+
+Collapsed by default. These reflect current US tax law — adjust if your situation differs or rules change.
+
+| Parameter                | Description                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 401(k) Limit             | Annual pre-tax 401(k) contribution limit.                                                                                                                       |
+| HSA Limit                | Annual HSA contribution limit.                                                                                                                                  |
+| Employer Match           | 401(k) employer match as a percentage of gross salary.                                                                                                          |
+| Standard Deduction       | Federal standard deduction applied before bracket tax is computed.                                                                                              |
+| SS Rate                  | Employee Social Security payroll tax rate.                                                                                                                      |
+| SS Wage Base             | Maximum wages subject to Social Security tax.                                                                                                                   |
+| Medicare Rate            | Base Medicare payroll tax rate.                                                                                                                                 |
+| Add'l Medicare Rate      | Additional Medicare surcharge rate above the threshold.                                                                                                         |
+| Add'l Medicare Threshold | Wage threshold above which the additional Medicare rate applies.                                                                                                |
+| Bracket Thresholds       | Upper income boundary for each federal tax bracket. Rates are fixed at current law; only the thresholds are editable since these adjust annually for inflation. |
+
 ## Tax Model
 
 Federal income tax is computed using current brackets and the standard deduction. Joint tax liability is split between spouses using the **Shapley value** — each person bears the average marginal cost of their income across both orderings of who earns first. This is mathematically the fairest allocation of the marriage penalty (or bonus) and avoids arbitrarily assigning the joint tax to one earner.
@@ -103,7 +120,7 @@ Annual contributions to the portfolio, including pre-tax deductions, employer ma
 
 A common intuition is that receiving inheritance earlier is always better because it compounds longer. This is true in expectation (median outcome) but **not necessarily true at a given success percentile** over typical retirement horizons.
 
-Receiving $2M in year 1 instead of year 18 exposes that capital to 17 additional years of market risk. At the 25th percentile of outcomes, the left tail of 17 years of lognormal compounding can be worse than receiving the same $2M with certainty at year 18. The crossover horizon — at which earlier inheritance reliably helps the 25th percentile — is approximately:
+Receiving \$2M in year 1 instead of year 18 exposes that capital to 17 additional years of market risk. At the 25th percentile of outcomes, the left tail of 17 years of lognormal compounding can be worse than receiving the same \$2M with certainty at year 18. The crossover horizon — at which earlier inheritance reliably helps the 25th percentile — is approximately:
 
 ```
 T* = (0.674 * σ / μ)² / 4
@@ -125,7 +142,19 @@ With default parameters (σ=0.20, μ≈0.019), this is roughly 49 years. Over an
 
 ```bash
 pip install streamlit numpy scipy plotly
-streamlit run dashboard.py
+streamlit run app.py
+```
+
+### Project Structure
+
+```
+salary_monte_carlo/
+├── app.py           # entrypoint — run this
+├── dashboard.py     # simulator page
+├── README.md
+├── requirements.txt
+└── pages/
+    └── docs.py      # documentation page
 ```
 
 ## License
