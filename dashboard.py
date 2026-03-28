@@ -1,7 +1,11 @@
+import logging
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
 from scipy.optimize import brentq
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
 
 SIMULATIONS = 10000
 
@@ -143,8 +147,10 @@ def compute_contributions(salaries, partner_income, spending, match_rate):
         match = salary * match_rate
         excess = net_income - spending
 
-        if excess < 0:
+    # After
+        if excess < -1.0:   # allow up to $1 of floating-point slop
             return None
+        excess = max(excess, 0)
 
         contributions[y] = pretax + match + excess
 
@@ -209,6 +215,13 @@ def simulate_salary_model(
     salary_growth, match_rate, inheritance, inheritance_year
 ):
 
+    logger.info("simulate_salary_model | start_salary=%s partner_income=%s years=%s spending=%s "
+                "current_portfolio=%s target_portfolio=%s salary_growth=%s match_rate=%s "
+                "inheritance=%s inheritance_year=%s",
+                start_salary, partner_income, years, spending,
+                current_portfolio, target_portfolio, salary_growth, match_rate,
+                inheritance, inheritance_year)
+
     salaries = generate_salary_path(start_salary, years, salary_growth)
     contributions = compute_contributions(salaries, partner_income, spending, match_rate)
 
@@ -222,7 +235,8 @@ def simulate_salary_model(
     wealth_paths = simulate_wealth_paths(current_portfolio, contributions, growth)
     success_rate = np.mean(portfolios >= target_portfolio)
 
-    contributions[inheritance_year - 1] -= inheritance
+    if inheritance_year is not None:
+        contributions[inheritance_year - 1] -= inheritance
 
     return portfolios, success_rate, salaries, contributions, wealth_paths
 
@@ -372,6 +386,14 @@ with st.spinner("Running Monte Carlo simulation..."):
         inheritance, inheritance_year
     )
 
+logger.info(
+    "Inputs | partner_income=$%s years=%s spending=$%s current_portfolio=$%s "
+    "target_portfolio=$%s salary_growth=%s match_rate=%s inheritance=$%s inheritance_year=%s",
+    f"{partner_income:,.0f}", years, f"{spending:,.0f}", f"{current_portfolio:,.0f}",
+    f"{target_portfolio:,.0f}", f"{salary_growth:.2%}", f"{match_rate:.2%}",
+    f"{inheritance:,.0f}", inheritance_year,
+)
+
 years_axis = list(range(years + 1))
 contrib_x  = years_axis[1:]
 
@@ -383,6 +405,7 @@ with m1:
 with m2:
     st.metric("Success Rate",          f"{success:.1%}")
 with m3:
+    assert portfolios is not None
     st.metric("Median Ending Portfolio", f"${np.median(portfolios):,.0f}")
 
 st.divider()
