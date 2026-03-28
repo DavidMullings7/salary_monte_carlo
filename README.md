@@ -1,162 +1,154 @@
-# Retirement Salary Monte Carlo Simulator
+# Retirement Planning: Income & Savings Solver
 
-A Monte Carlo retirement planner that solves for the minimum salary required to reach a target portfolio with a given probability, accounting for federal taxes, FICA, pre-tax contributions, employer match, spousal income with Shapley-fair tax splitting, inheritance timing, and stochastic market returns.
+A two-phase Monte Carlo retirement planner that answers the core question: **how much do you need to earn and save to achieve a target monthly spending amount in retirement?**
+
+The app works backwards from your retirement spending goal. It derives the portfolio required at retirement accounting for return volatility and sequence-of-returns risk, then solves for the minimum starting salary needed to accumulate that portfolio.
 
 ## Use Cases
 
-- **Salary negotiation floor** — determine the minimum salary you need to retire on time with acceptable probability, given your household's full financial picture
-- **Retirement timeline sensitivity** — understand how adding or removing years changes required salary
-- **Inheritance planning** — model the impact of a future inheritance on retirement feasibility, including the effect of when it arrives
-- **Partner income tradeoffs** — assess how changes in a partner's income (career break, part-time, etc.) affect your required salary
-- **Market assumption stress testing** — see how sensitive your retirement plan is to return assumptions and volatility
+- **Salary floor** — determine the minimum salary needed to retire on time and sustain your target monthly spending for the full retirement horizon
+- **Retirement spending calibration** — understand the salary implications of different monthly spend targets
+- **Social Security gap planning** — model the portfolio cost of retiring before Social Security begins, with a configurable delay
+- **Inheritance planning** — model the impact of a future lump-sum, including timing effects
+- **Market assumption stress testing** — see how sensitive the plan is to accumulation vs. retirement return assumptions and volatility
+- **Partner income tradeoffs** — assess how a partner's income affects your required salary
 
 ## How It Works
 
-The simulator solves a root-finding problem: it searches for the salary at which your Monte Carlo success rate equals your target (e.g. 75%). Internally it:
+### Phase 1 — Decumulation Solver
 
-1. Generates 10,000 simulated return paths using a lognormal model
-2. For each candidate salary, computes annual contributions after taxes, pre-tax deductions, and spending
-3. Simulates portfolio growth across all paths
-4. Measures the fraction of paths that hit the target portfolio
-5. Uses Brent's method to find the exact salary where that fraction equals the target success rate
+Given the target monthly spend, Social Security offset, delay, and survival rate target, the solver finds the portfolio P\* at retirement such that the Monte Carlo portfolio survival rate equals the target (e.g. 90%). The solver runs Brent's method over 10,000 simulated retirement drawdown paths, each starting at a candidate portfolio value, until it finds P\* where exactly the target fraction survive the full retirement horizon.
+
+### Phase 2 — Accumulation Solver
+
+Given P\* from Phase 1, the solver finds the minimum starting salary at which the Monte Carlo accumulation success rate equals the target (e.g. 70%). At each candidate salary it computes annual after-tax contributions, simulates portfolio growth across all 10,000 paths, and measures the fraction reaching P\*.
+
+### Return Model
+
+Both phases draw from a **single AR(1) lognormal process** spanning the full horizon (accumulation years + retirement years), split at the retirement date. This preserves the market state at the transition: a crash in the final accumulation years feeds directly into early retirement returns. The unconditional mean shifts at retirement to reflect a different asset allocation, while the autocorrelation structure remains continuous. A single seed controls the full path set for reproducibility.
 
 ## Inputs
 
 ### Household
 
-| Parameter         | Description                                                                            |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| Partner Income    | Your partner's gross annual income. Used to compute joint federal tax liability.       |
-| Annual Spending   | Total household spending per year in today's dollars. The model does not inflate this. |
-| Current Portfolio | Total investable assets today (401k, brokerage, IRA, etc.).                            |
+| Parameter | Description |
+| --- | --- |
+| Partner Income | Gross annual income of the non-solver spouse. Used to compute joint federal tax liability. |
+| Working-Years Spending | Annual household spending during accumulation, in today's dollars. |
+| Current Portfolio | Total investable assets today (401k, brokerage, IRA, etc.). |
 
-### Goal
+### Retirement Income Goal
 
-| Parameter           | Description                                                                                                                  |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Target Portfolio    | The portfolio value you want to reach by end of horizon. A common rule of thumb is 25x annual spending (4% rule).            |
-| Years               | Investment horizon in years.                                                                                                 |
-| Target Success Rate | The fraction of Monte Carlo scenarios that must reach the target. 75% is moderately conservative; 90%+ is very conservative. |
+| Parameter | Description |
+| --- | --- |
+| Monthly Spend in Retirement | Target monthly spending once retired, in today's dollars. The required portfolio and salary are derived from this. |
+| Years in Retirement | Length of the retirement drawdown horizon. |
+| Portfolio Survival Rate | Fraction of Monte Carlo scenarios in which the portfolio must last the full retirement horizon. |
+| Social Security ($/mo) | Expected monthly Social Security benefit, which offsets the required portfolio draw once it begins. |
+| SS Delay (years) | Years after retirement before Social Security begins. During this gap the full monthly spend is drawn from the portfolio. Hidden when Social Security is $0. |
+
+### Accumulation
+
+| Parameter | Description |
+| --- | --- |
+| Years to Retirement | Investment horizon in years. |
+| Accumulation Success Rate | Fraction of Monte Carlo scenarios that must reach the target portfolio by retirement. |
 
 ### Inheritance
 
-| Parameter        | Description                                               |
-| ---------------- | --------------------------------------------------------- |
-| Inheritance      | Expected lump-sum inheritance in today's dollars.         |
-| Inheritance Year | The year within the horizon when the inheritance arrives. |
+| Parameter | Description |
+| --- | --- |
+| Amount | Expected lump-sum inheritance in today's dollars. |
+| Year | Year within the accumulation horizon when the inheritance arrives. |
 
 ### Market Assumptions
 
-| Parameter         | Description                                          |
-| ----------------- | ---------------------------------------------------- |
-| Mean Return       | Expected annualized real return on the portfolio.    |
-| Return Volatility | Annualized standard deviation of log returns.        |
-| Salary Growth     | Real (inflation-adjusted) annual salary growth rate. |
+| Parameter | Description |
+| --- | --- |
+| Accum. Return | Expected mean annual return during the accumulation phase. |
+| Retirement Return | Expected mean annual return during the retirement drawdown phase. Typically lower, reflecting a more conservative allocation. |
+| Volatility (σ) | Annualized standard deviation of log returns. Applied across both phases. |
+| Salary Growth | Annual salary growth rate. |
 
 ### Tax & Plan Settings
 
-Collapsed by default. These reflect current US tax law — adjust if your situation differs or rules change.
+Collapsed by default. These reflect current US tax law.
 
-| Parameter                | Description                                                                                                                                                     |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 401(k) Limit             | Annual pre-tax 401(k) contribution limit.                                                                                                                       |
-| HSA Limit                | Annual HSA contribution limit.                                                                                                                                  |
-| Employer Match           | 401(k) employer match as a percentage of gross salary.                                                                                                          |
-| Standard Deduction       | Federal standard deduction applied before bracket tax is computed.                                                                                              |
-| SS Rate                  | Employee Social Security payroll tax rate.                                                                                                                      |
-| SS Wage Base             | Maximum wages subject to Social Security tax.                                                                                                                   |
-| Medicare Rate            | Base Medicare payroll tax rate.                                                                                                                                 |
-| Add'l Medicare Rate      | Additional Medicare surcharge rate above the threshold.                                                                                                         |
-| Add'l Medicare Threshold | Wage threshold above which the additional Medicare rate applies.                                                                                                |
-| Bracket Thresholds       | Upper income boundary for each federal tax bracket. Rates are fixed at current law; only the thresholds are editable since these adjust annually for inflation. |
+| Parameter | Description |
+| --- | --- |
+| 401(k) Limit | Annual pre-tax 401(k) contribution limit. |
+| HSA Limit | Annual HSA contribution limit. |
+| Employer Match | 401(k) employer match as a percentage of gross salary. |
+| Standard Deduction | Federal standard deduction applied before bracket tax. |
+| SS Rate | Employee Social Security payroll tax rate. |
+| SS Wage Base | Maximum wages subject to Social Security tax. |
+| Medicare Rate | Base Medicare payroll tax rate. |
+| Add'l Medicare Rate | Additional Medicare surcharge rate above the threshold. |
+| Add'l Medicare Threshold | Wage threshold above which the surcharge applies. |
+| Bracket Thresholds | Upper income boundary for each federal tax bracket. Rates are fixed; thresholds are editable. |
 
 ## Tax Model
 
-Federal income tax is computed using current brackets and the standard deduction. Joint tax liability is split between spouses using the **Shapley value** — each person bears the average marginal cost of their income across both orderings of who earns first. This is mathematically the fairest allocation of the marriage penalty (or bonus) and avoids arbitrarily assigning the joint tax to one earner.
+Federal income tax is computed using current brackets and the standard deduction. Joint tax liability is split using the **Shapley value** — each earner bears the average marginal cost of their income across both orderings of who earns first. This is the fairest allocation of the marriage penalty or bonus.
 
-FICA taxes (Social Security and Medicare) are computed separately on your salary only, including the additional Medicare surcharge above $250,000.
+FICA (Social Security and Medicare) is computed on the solver's salary only, including the additional Medicare surcharge above the threshold.
 
-Pre-tax contributions (401k and HSA) are maximized subject to the constraint that after-tax income covers spending. Contributions above the pre-tax limit flow into taxable after-tax savings.
+Pre-tax contributions (401k and HSA) are maximized subject to the constraint that after-tax income covers working-years spending. After-tax surplus flows into additional portfolio contributions.
 
-**Note:** State income tax is not modeled. For Texas residents this is accurate; for other states you should treat the required salary output as a lower bound.
-
-## Return Model
-
-Returns are modeled as **lognormally distributed**, meaning gross returns `(1 + r)` follow a lognormal distribution and log returns are normally distributed. This is more realistic than a normal model because:
-
-- Returns can never go below -100% (portfolio can't go negative)
-- The distribution is right-skewed, matching empirical return distributions
-- Long-run compounding is correctly captured
-
-The `mean_return` parameter is interpreted as the arithmetic mean annual return. It is internally converted to the correct lognormal `μ` parameter so that the expected gross return equals `1 + mean_return`.
+**Note:** State income tax is not modeled. Treat the required salary as a lower bound if you pay state income tax.
 
 ## Interpreting Results
 
-### Required Salary
+### Required Starting Salary
 
-The minimum gross salary at which your Monte Carlo success rate meets the target. This is a **floor**, not a recommendation — it assumes you save every dollar of after-tax surplus above spending.
+The minimum gross salary at which the accumulation success rate meets the target. Assumes every dollar of after-tax surplus above spending is invested.
 
-### Success Rate
+### Target Portfolio at Retirement
 
-The fraction of 10,000 simulated market scenarios in which the portfolio reaches the target. A 75% success rate means 1 in 4 scenarios falls short. Higher is safer but requires a higher salary.
+The portfolio required at retirement to sustain the target monthly spend for the full horizon at the target survival rate. Derived from the Monte Carlo decumulation solver, accounting for sequence-of-returns risk.
 
-### Median Ending Portfolio
+### Accumulation Success Rate
 
-The 50th percentile terminal portfolio across all simulations. This will typically be well above the target portfolio if the success rate is at 75%, because the median scenario is better than the 25th percentile scenario the solver is actually targeting.
+The fraction of 10,000 simulated accumulation paths that reach the target portfolio by retirement.
 
-### Wealth Paths Chart
+### Portfolio Survival Rate
 
-Shows the 10th, 50th, and 90th percentile portfolio trajectories over time. The wide spread between percentiles reflects return volatility — the fan shape is expected and is not a cause for concern. The 10th percentile path is the one most relevant to your retirement security.
+The fraction of simulated retirement paths — each starting from its own accumulation ending value — in which the portfolio is not depleted by end of the retirement horizon.
 
-### Probability of FI Over Time
+### Retirement Journey Chart
 
-Shows the fraction of scenarios that have already crossed the target portfolio in each year. This is useful for understanding whether you might retire early in good market conditions.
+A unified timeline showing both phases. Blue bands are accumulation (10th/50th/90th percentile); orange bands are the retirement drawdown. The vertical line marks retirement; the dashed horizontal marks the target portfolio.
 
-### Contributions by Year
+### Retirement Drawdown Paths
 
-Annual contributions to the portfolio, including pre-tax deductions, employer match, and after-tax surplus. The spike in the inheritance year reflects the lump-sum addition. If contributions are flat or declining in real terms, this reflects the salary growth rate and tax drag.
+The 10th, 50th, and 90th percentile portfolio trajectories through retirement. The 10th percentile path is most relevant to plan durability.
 
-## Inheritance Timing
+### Probability of Reaching Target Portfolio
 
-A common intuition is that receiving inheritance earlier is always better because it compounds longer. This is true in expectation (median outcome) but **not necessarily true at a given success percentile** over typical retirement horizons.
+Fraction of accumulation scenarios that have crossed the target portfolio in each year. Useful for understanding how early retirement might be possible in strong market conditions.
 
-Receiving \$2M in year 1 instead of year 18 exposes that capital to 17 additional years of market risk. At the 25th percentile of outcomes, the left tail of 17 years of lognormal compounding can be worse than receiving the same \$2M with certainty at year 18. The crossover horizon — at which earlier inheritance reliably helps the 25th percentile — is approximately:
+## Social Security Gap
 
-```
-T* = (0.674 * σ / μ)² / 4
-```
+When `SS Delay > 0`, the annual draw schedule is not uniform across retirement:
 
-With default parameters (σ=0.20, μ≈0.019), this is roughly 49 years. Over an 18-year horizon, the model correctly shows that later inheritance may require a lower salary at a 75% success target.
+- **Years 0 → delay − 1**: full monthly spend drawn from the portfolio
+- **Years delay → end**: draw reduced by the monthly Social Security benefit
+
+This increases the required portfolio relative to immediate SS, with the magnitude depending on benefit size, delay length, and return assumptions during the gap.
 
 ## Assumptions and Limitations
 
-- Spending is constant in real terms and not inflation-adjusted within the model
-- Social Security income is not modeled
+- Working-years and retirement spending are constant in real terms; inflation is not modeled
+- The model assumes 100% of after-tax surplus above spending is invested
+- Social Security is modeled as a fixed flat amount starting at a fixed year; COLA adjustments are not modeled
 - State income taxes are not modeled
-- The model assumes you save 100% of after-tax surplus above spending — no lifestyle inflation
-- Returns are lognormal with weak AR(1) mean reversion (φ=−0.15) — no regime switching or sequence-of-returns modeling beyond volatility
+- Volatility (σ) is shared across both phases; only the mean return shifts at retirement
+- Inheritance is treated as a certain event in a known year; probability of receipt is not modeled
 - The 401k limit, HSA limit, and tax brackets reflect current law and will need updating over time
-- Inheritance is treated as a certain event in a known year — probability of inheritance is not modeled
 
 ## Installation
 
 ```bash
 pip install streamlit numpy scipy plotly
-streamlit run app.py
+streamlit run dashboard.py
 ```
-
-### Project Structure
-
-```
-salary_monte_carlo/
-├── app.py           # entrypoint — run this
-├── dashboard.py     # simulator page
-├── README.md
-├── requirements.txt
-└── pages/
-    └── docs.py      # documentation page
-```
-
-## License
-
-MIT
