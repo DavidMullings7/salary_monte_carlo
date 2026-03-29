@@ -407,8 +407,8 @@ with st.sidebar:
     # Retirement Income Goal — the primary input
     st.subheader("Retirement Income Goal")
     monthly_retirement_spend = st.number_input(
-        "Monthly Spend in Retirement ($)", 0, 50_000, 9_000, step=500,
-        help="Target monthly spending once retired, in today's dollars."
+        "Monthly Withdrawal in Retirement ($)", 0, 50_000, 9_000, step=500,
+        help="Target monthly withdrawal once retired, in today's dollars."
     )
     rc1, rc2 = st.columns(2)
     with rc1:
