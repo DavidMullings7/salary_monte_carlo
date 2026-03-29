@@ -98,7 +98,7 @@ def max_pretax_contribution(salary, partner_income, spending):
         net_income = personal_after_tax_income(salary, partner_income, pretax, 0)
         return net_income - spending
     try:
-        pretax = float(brentq(objective, 0, K401_LIMIT + HSA_LIMIT))
+        pretax = float(brentq(objective, 0, K401_LIMIT + HSA_LIMIT))  # type: ignore[arg-type]
     except ValueError:
         pretax = K401_LIMIT + HSA_LIMIT
     return pretax
@@ -209,18 +209,6 @@ def simulate_wealth_paths(current_portfolio, contributions, growth):
 # DECUMULATION
 # -----------------------------
 
-def required_portfolio_from_spend(monthly_spend, retirement_years, annual_return, social_security_monthly=0):
-    """Amortization (PV of annuity): the lump-sum portfolio at retirement needed to fund
-    (monthly_spend - social_security_monthly) per month for retirement_years years
-    at annual_return, drawing down to zero."""
-    net_monthly = monthly_spend - social_security_monthly
-    if net_monthly <= 0:
-        return 0.0
-    r = annual_return / 12   # monthly rate
-    n = retirement_years * 12
-    if r <= 0:
-        return net_monthly * n
-    return net_monthly * ((1 + r) ** n - 1) / (r * (1 + r) ** n)
 
 
 def make_annual_draws(monthly_spend, social_security_monthly, ss_start_year, retirement_years):
@@ -253,90 +241,63 @@ def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_ye
     return wealth, survival_rate
 
 
-def solve_required_retirement_portfolio(
-    monthly_spend, retirement_years, retire_mean, return_std,
-    social_security_monthly, ss_start_year, target_survival_rate, ret_growth
-):
-    """Find the portfolio P at retirement such that the Monte Carlo survival rate equals
-    target_survival_rate, using the caller-supplied ret_growth paths.
-
-    Accepting pre-generated paths (rather than seeding internally) is what makes
-    cross-period consistency possible: the caller generates accumulation and retirement
-    paths from a single AR(1) process via generate_joint_return_paths, so the market
-    state at the retirement boundary is shared across both phases.
-
-    Returns (required_portfolio, annual_draws) where annual_draws is the per-year
-    withdrawal schedule used in both the solver and the final simulation."""
-    annual_draws = make_annual_draws(
-        monthly_spend, social_security_monthly, ss_start_year, retirement_years
-    )
-
-    if annual_draws.max() == 0:
-        return 0.0, annual_draws
-
-    def survival_at(portfolio):
-        starting = np.full(SIMULATIONS, portfolio)
-        _, rate = simulate_decumulation_paths(starting, annual_draws, retirement_years, ret_growth)
-        return rate
-
-    # Upper bound: PV assuming the worst case (no SS ever) × 6, which covers targets
-    # up to ~99% survival across typical return/volatility assumptions.
-    det_pv_no_ss = required_portfolio_from_spend(monthly_spend, retirement_years, retire_mean, 0)
-    lo = 0.0
-    hi = max(det_pv_no_ss * 6, 1_000_000.0)
-
-    required_portfolio = float(brentq(lambda p: survival_at(p) - target_survival_rate, lo, hi))
-    return required_portfolio, annual_draws
-
 # -----------------------------
 # SALARY MODEL
 # -----------------------------
 
 def simulate_salary_model(
     start_salary, partner_income, years, spending,
-    current_portfolio, target_portfolio, growth,
-    salary_growth, match_rate, inheritance, inheritance_year
+    current_portfolio, growth, salary_growth, match_rate, inheritance, inheritance_year
 ):
     logger.info(
         "simulate_salary_model | start_salary=%s partner_income=%s years=%s spending=%s "
-        "current_portfolio=%s target_portfolio=%s salary_growth=%s match_rate=%s "
-        "inheritance=%s inheritance_year=%s",
+        "current_portfolio=%s salary_growth=%s match_rate=%s inheritance=%s inheritance_year=%s",
         start_salary, partner_income, years, spending,
-        current_portfolio, target_portfolio, salary_growth, match_rate,
-        inheritance, inheritance_year,
+        current_portfolio, salary_growth, match_rate, inheritance, inheritance_year,
     )
     salaries = generate_salary_path(start_salary, years, salary_growth)
     contributions = compute_contributions(salaries, partner_income, spending, match_rate)
     if contributions is None:
-        return None, 0, None, None, None
+        return None, None, None, None
     if inheritance_year is not None:
         contributions[inheritance_year - 1] += inheritance
     portfolios = compute_final_portfolios(current_portfolio, contributions, growth)
     wealth_paths = simulate_wealth_paths(current_portfolio, contributions, growth)
-    success_rate = np.mean(portfolios >= target_portfolio)
     if inheritance_year is not None:
         contributions[inheritance_year - 1] -= inheritance
-    return portfolios, success_rate, salaries, contributions, wealth_paths
+    return portfolios, salaries, contributions, wealth_paths
 
 # -----------------------------
 # SALARY SOLVER
 # -----------------------------
 
 def solve_required_salary(
-    partner_income, years, spending, current_portfolio, target_portfolio,
+    partner_income, years, spending, current_portfolio,
     salary_growth, match_rate, target_success, inheritance, inheritance_year,
-    accum_growth
+    accum_growth, annual_draws, retirement_years, ret_growth
 ):
-    def objective(salary):
-        _, success, _, _, _ = simulate_salary_model(
-            salary, partner_income, years, spending, current_portfolio,
-            target_portfolio, accum_growth, salary_growth, match_rate,
-            inheritance, inheritance_year
-        )
-        return success - target_success
+    """Solve for the salary where the joint probability of accumulating enough AND
+    sustaining the full retirement drawdown equals target_success.
 
-    salary = float(brentq(objective, 50000, 600000))
-    return salary
+    Each Brent iteration pipes the 10,000 accumulation ending portfolios directly into
+    the decumulation simulation and measures the fraction that survive the full retirement
+    horizon. This treats accumulation and decumulation as a single end-to-end process,
+    avoiding the independence assumption of the two-stage approach."""
+
+    def objective(salary):
+        result = simulate_salary_model(
+            salary, partner_income, years, spending, current_portfolio,
+            accum_growth, salary_growth, match_rate, inheritance, inheritance_year
+        )
+        portfolios = result[0]
+        if portfolios is None:
+            return -target_success
+        _, joint_success = simulate_decumulation_paths(
+            portfolios, annual_draws, retirement_years, ret_growth
+        )
+        return joint_success - target_success
+
+    return float(brentq(objective, 50000, 600000))  # type: ignore[arg-type]
 
 # ==============================
 # STREAMLIT UI
@@ -358,6 +319,12 @@ with st.sidebar:
 
     st.divider()
 
+    # Accumulation
+    st.subheader("Accumulation")
+    years = st.slider("Years to Retirement", 5, 40, 25)
+
+    st.divider()
+
     # Retirement Income Goal — the primary input
     st.subheader("Retirement Income Goal")
     monthly_retirement_spend = st.number_input(
@@ -367,11 +334,7 @@ with st.sidebar:
     rc1, rc2 = st.columns(2)
     with rc1:
         retirement_years = st.slider("Years in Retirement", 10, 50, 40)
-        target_survival_rate = st.slider(
-            "Portfolio Survival Rate", 50, 99, 75, format="%d%%",
-            help="Probability that the portfolio lasts the full retirement. "
-                 "Higher values require a larger portfolio, accounting for sequence-of-returns risk."
-        ) / 100
+        target_success = st.slider("Success Rate", 50, 99, 70, format="%d%%") / 100
     with rc2:
         social_security_monthly = st.number_input(
             "Social Security ($/mo)", 0, 10_000, 2_500, step=100,
@@ -386,16 +349,6 @@ with st.sidebar:
                 help="Years after retirement before Social Security begins. "
                      "During this gap the full monthly spend is drawn from the portfolio."
             )
-
-    st.divider()
-
-    # Accumulation
-    st.subheader("Accumulation")
-    gc1, gc2 = st.columns(2)
-    with gc1:
-        years = st.slider("Years to Retirement", 5, 40, 25)
-    with gc2:
-        target_success = st.slider("Success Rate", 50, 99, 70, format="%d%%") / 100
 
     st.divider()
 
@@ -418,7 +371,7 @@ with st.sidebar:
     st.subheader("Market")
     mc1, mc2 = st.columns(2)
     with mc1:
-        mean_return       = st.slider("Accum. Return",     0.0, 15.0, 4.0, step=0.5, format="%.1f%%") / 100
+        mean_return       = st.slider("Accumulation Return",     0.0, 10.0, 3.5, step=0.5, format="%.1f%%") / 100
         return_std        = st.slider("Volatility (σ)",    0,   30,   18,             format="%d%%")   / 100
     with mc2:
         retirement_return = st.slider("Retirement Return", 0.0, 10.0,  4.0, step=0.5, format="%.1f%%") / 100
@@ -487,59 +440,56 @@ if not run:
 # -----------------------------
 
 logger.info(
-    "Inputs | monthly_retirement_spend=$%s retirement_years=%s target_survival_rate=%s "
-    "social_security_monthly=$%s partner_income=$%s years=%s spending=$%s "
+    "Inputs | monthly_retirement_spend=$%s retirement_years=%s "
+    "social_security_monthly=$%s ss_start_year=%s partner_income=$%s years=%s spending=$%s "
     "current_portfolio=$%s salary_growth=%s match_rate=%s inheritance=$%s inheritance_year=%s",
-    f"{monthly_retirement_spend:,.0f}", retirement_years, f"{target_survival_rate:.0%}",
-    f"{social_security_monthly:,.0f}", f"{partner_income:,.0f}", years, f"{spending:,.0f}",
-    f"{current_portfolio:,.0f}", f"{salary_growth:.2%}", f"{match_rate:.2%}",
-    f"{inheritance:,.0f}", inheritance_year,
+    f"{monthly_retirement_spend:,.0f}", retirement_years,
+    f"{social_security_monthly:,.0f}", ss_start_year, f"{partner_income:,.0f}", years,
+    f"{spending:,.0f}", f"{current_portfolio:,.0f}", f"{salary_growth:.2%}",
+    f"{match_rate:.2%}", f"{inheritance:,.0f}", inheritance_year,
 )
 
 with st.spinner("Running Monte Carlo simulation..."):
 
-    # Generate one AR(1) process spanning both phases. Splitting it at the retirement
-    # boundary preserves the market state across the transition: a crash at the end of
-    # accumulation carries into early-retirement returns via the autoregressive dynamics.
-    # Two independently seeded draws (the prior approach) would sever that link entirely.
+    # One AR(1) process spanning both phases, split at retirement.
     np.random.seed(42)
     accum_growth, ret_growth = generate_joint_return_paths(
         years, retirement_years, mean_return, retirement_return, return_std
     )
 
-    # Step 1: Solve for the portfolio needed at retirement using Monte Carlo decumulation.
-    # Uses the retirement slice of the joint paths so sequence-of-returns context is intact.
-    target_portfolio, annual_draws = solve_required_retirement_portfolio(
-        monthly_retirement_spend, retirement_years, retirement_return, return_std,
-        social_security_monthly, ss_start_year, target_survival_rate, ret_growth
+    # Draw schedule: higher before Social Security begins, lower once it does.
+    annual_draws = make_annual_draws(
+        monthly_retirement_spend, social_security_monthly, ss_start_year, retirement_years
     )
 
-    logger.info("target_portfolio (MC-derived)=$%s ss_start_year=%s annual_draws=%s",
-                f"{target_portfolio:,.0f}", ss_start_year,
-                [f"${d:,.0f}" for d in annual_draws])
-
-    # Step 2: Solve for the required salary to accumulate target_portfolio
+    # Solve for salary where the joint probability of accumulating enough AND
+    # sustaining the full retirement drawdown equals target_success.
+    # Each Brent iteration runs accumulation → decumulation end-to-end on all 10,000 paths.
     required_salary = solve_required_salary(
-        partner_income, years, spending, current_portfolio, target_portfolio,
+        partner_income, years, spending, current_portfolio,
         salary_growth, match_rate, target_success, inheritance, inheritance_year,
-        accum_growth
+        accum_growth, annual_draws, retirement_years, ret_growth
     )
 
-    # Step 3: Full accumulation simulation
-    portfolios, accum_success, salaries, contributions, wealth_paths = simulate_salary_model(
+    # Final full simulation for charts and display metrics.
+    portfolios, salaries, contributions, wealth_paths = simulate_salary_model(
         required_salary, partner_income, years, spending, current_portfolio,
-        target_portfolio, accum_growth, salary_growth, match_rate,
-        inheritance, inheritance_year
+        accum_growth, salary_growth, match_rate, inheritance, inheritance_year
     )
     assert portfolios is not None and wealth_paths is not None and contributions is not None
 
-    # Step 4: Decumulation — each sim's ending accumulation portfolio seeds its own drawdown.
-    # ret_growth[i] is the continuation of the same AR(1) path that produced portfolios[i],
-    # so a simulation that experienced a late-accumulation crash also experiences the
-    # correlated early-retirement environment from that same path.
-    decum_paths, survival_rate = simulate_decumulation_paths(
+    # target_portfolio is display-only: the median ending accumulation portfolio
+    # across all simulations at the solved salary.
+    target_portfolio = float(np.median(portfolios))
+
+    # Decumulation — each sim's ending portfolio seeds its own drawdown on the
+    # continuation of the same AR(1) path.
+    decum_paths, joint_success = simulate_decumulation_paths(
         portfolios, annual_draws, retirement_years, ret_growth
     )
+
+    logger.info("required_salary=$%s target_portfolio(median)=$%s joint_success=%s",
+                f"{required_salary:,.0f}", f"{target_portfolio:,.0f}", f"{joint_success:.1%}")
 
 years_axis  = list(range(years + 1))
 contrib_x   = years_axis[1:]
@@ -550,24 +500,20 @@ retire_axis = list(range(years, years + retirement_years + 1))
 # -----------------------------
 
 st.subheader("Results")
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3 = st.columns(3)
 with m1:
     st.metric("Required Starting Salary", f"${required_salary:,.0f}")
 with m2:
     st.metric(
-        "Target Portfolio at Retirement", f"${target_portfolio:,.0f}",
-        help="Derived via Monte Carlo: the portfolio at retirement that achieves your "
-             "target survival rate accounting for sequence-of-returns risk."
+        "Median Portfolio at Retirement", f"${target_portfolio:,.0f}",
+        help="Median ending portfolio across all simulations at the solved salary. "
+             "Display only — the solver optimizes joint success, not this value."
     )
 with m3:
     st.metric(
-        "Accumulation Success", f"{accum_success:.1%}",
-        help="Share of simulations that reach the target portfolio by retirement."
-    )
-with m4:
-    st.metric(
-        "Portfolio Survival Rate", f"{survival_rate:.1%}",
-        help="Share of simulations where the portfolio lasts the full retirement period."
+        "Joint Success Rate", f"{joint_success:.1%}",
+        help="Fraction of simulations that both accumulate enough and sustain the full "
+             "retirement drawdown. This is the single target the solver optimizes against."
     )
 
 st.divider()
@@ -664,8 +610,8 @@ r1c1, r1c2 = st.columns(2, gap="medium")
 with r1c1:
     fig = go.Figure()
     fig.add_trace(go.Histogram(x=portfolios, nbinsx=50))
-    fig.add_vline(x=target_portfolio, line_dash="dash", line_color="red",
-                  annotation_text="Target", annotation_position="top right")
+    fig.add_vline(x=target_portfolio, line_dash="dash", line_color="gray",
+                  annotation_text="Median", annotation_position="top right")
     fig.update_layout(
         title="Portfolio at Retirement (Distribution)",
         xaxis_title="Portfolio Value", yaxis_title="Count",
@@ -717,14 +663,17 @@ with r2c1:
     st.plotly_chart(fig_decum, use_container_width=True)
 
 with r2c2:
-    prob_by_year = np.mean(wealth_paths >= target_portfolio, axis=0)
+    # Threshold: 10th percentile of ending portfolios. Shows the fraction of paths
+    # staying above the worst-decile outcome over the accumulation horizon.
+    p10_final = float(np.percentile(portfolios, 10))
+    prob_by_year = np.mean(wealth_paths >= p10_final, axis=0)
     fig3 = go.Figure()
     fig3.add_trace(go.Scatter(
         x=years_axis, y=prob_by_year,
-        mode="lines", name="P(FI)", fill="tozeroy", line=dict(width=2),
+        mode="lines", name="P(above p10)", fill="tozeroy", line=dict(width=2),
     ))
     fig3.update_layout(
-        title="Probability of Reaching Target Portfolio",
+        title=f"Paths Above 10th-Percentile Outcome (${p10_final/1e6:.1f}M)",
         xaxis_title="Year", yaxis_title="Probability",
         yaxis=dict(range=[0, 1], tickformat=".0%"),
         height=380,
