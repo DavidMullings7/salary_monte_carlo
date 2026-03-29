@@ -226,7 +226,7 @@ def make_annual_draws(monthly_spend, social_security_monthly, ss_start_year, ret
     return draws
 
 
-def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_years, ret_growth):
+def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_years, ret_growth, legacy_target):
     """Monte Carlo drawdown using pre-generated return paths.
     Each simulation uses its own ending accumulation value as the starting portfolio.
     annual_draws is a (retirement_years,) array of per-year withdrawals, allowing
@@ -237,7 +237,12 @@ def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_ye
     wealth[:, 0] = starting_portfolios
     for y in range(retirement_years):
         wealth[:, y + 1] = np.maximum(wealth[:, y] * ret_growth[:, y] - annual_draws[y], 0)
-    survival_rate = float(np.mean(wealth[:, -1] > 0))
+    
+    if legacy_target > 0:
+        survival_rate = float(np.mean(wealth[:, -1] >= legacy_target))
+    else:
+        survival_rate = float(np.mean(wealth[:, -1] > 0))
+
     return wealth, survival_rate
 
 
@@ -274,7 +279,7 @@ def simulate_salary_model(
 def solve_required_salary(
     partner_income, years, spending, current_portfolio,
     salary_growth, match_rate, target_success, inheritance, inheritance_year,
-    accum_growth, annual_draws, retirement_years, ret_growth
+    accum_growth, annual_draws, retirement_years, ret_growth, legacy_target
 ):
     """Solve for the salary where the joint probability of accumulating enough AND
     sustaining the full retirement drawdown equals target_success.
@@ -291,13 +296,41 @@ def solve_required_salary(
         )
         portfolios = result[0]
         if portfolios is None:
+            # Salary can't cover working-years spending; treat joint success as 0.
             return -target_success
         _, joint_success = simulate_decumulation_paths(
-            portfolios, annual_draws, retirement_years, ret_growth
+            portfolios, annual_draws, retirement_years, ret_growth, legacy_target
         )
         return joint_success - target_success
 
-    return float(brentq(objective, 50000, 600000))  # type: ignore[arg-type]
+    lo = 50_000.0
+    hi = 600_000.0
+
+    f_lo = objective(lo)
+
+    # If joint success is already above the target at the minimum salary,
+    # the current portfolio alone is likely sufficient — return lo.
+    if f_lo >= 0:
+        return lo
+
+    # Expand the upper bound until objective(hi) > 0 or we hit an absolute ceiling.
+    # This handles scenarios where a large current portfolio means even modest salaries
+    # come close to the target, requiring a higher bound to confirm the bracket.
+    MAX_SALARY = 5_000_000.0
+    f_hi = objective(hi)
+    while f_hi <= 0 and hi < MAX_SALARY:
+        hi = min(hi * 2.0, MAX_SALARY)
+        f_hi = objective(hi)
+
+    if f_hi <= 0:
+        raise ValueError(
+            f"The {target_success:.0%} joint success target is not achievable even at a "
+            f"${hi:,.0f} salary with the current inputs. "
+            f"Try lowering the success rate, reducing retirement spending, or "
+            f"increasing the retirement return assumption."
+        )
+
+    return float(brentq(objective, lo, hi))  # type: ignore[arg-type]
 
 # ==============================
 # STREAMLIT UI
@@ -349,6 +382,13 @@ with st.sidebar:
                 help="Years after retirement before Social Security begins. "
                      "During this gap the full monthly spend is drawn from the portfolio."
             )
+
+    st.divider()
+
+    # Legacy Goal
+    st.subheader("Legacy Goal")
+    enable_legacy = st.checkbox("Set a legacy goal")
+    legacy_target = st.number_input("Legacy Goal ($)", 0, 10_000_000, 500_000, step=50_000) if enable_legacy else 0
 
     st.divider()
 
@@ -442,11 +482,13 @@ if not run:
 logger.info(
     "Inputs | monthly_retirement_spend=$%s retirement_years=%s "
     "social_security_monthly=$%s ss_start_year=%s partner_income=$%s years=%s spending=$%s "
-    "current_portfolio=$%s salary_growth=%s match_rate=%s inheritance=$%s inheritance_year=%s",
+    "current_portfolio=$%s salary_growth=%s match_rate=%s inheritance=$%s inheritance_year=%s "
+    "legacy_target=$%s",
     f"{monthly_retirement_spend:,.0f}", retirement_years,
     f"{social_security_monthly:,.0f}", ss_start_year, f"{partner_income:,.0f}", years,
     f"{spending:,.0f}", f"{current_portfolio:,.0f}", f"{salary_growth:.2%}",
     f"{match_rate:.2%}", f"{inheritance:,.0f}", inheritance_year,
+    f"{legacy_target:,.0f}",
 )
 
 with st.spinner("Running Monte Carlo simulation..."):
@@ -465,11 +507,15 @@ with st.spinner("Running Monte Carlo simulation..."):
     # Solve for salary where the joint probability of accumulating enough AND
     # sustaining the full retirement drawdown equals target_success.
     # Each Brent iteration runs accumulation → decumulation end-to-end on all 10,000 paths.
-    required_salary = solve_required_salary(
-        partner_income, years, spending, current_portfolio,
-        salary_growth, match_rate, target_success, inheritance, inheritance_year,
-        accum_growth, annual_draws, retirement_years, ret_growth
-    )
+    try:
+        required_salary = solve_required_salary(
+            partner_income, years, spending, current_portfolio,
+            salary_growth, match_rate, target_success, inheritance, inheritance_year,
+            accum_growth, annual_draws, retirement_years, ret_growth, legacy_target
+        )
+    except ValueError as e:
+        st.error(str(e))
+        st.stop()
 
     # Final full simulation for charts and display metrics.
     portfolios, salaries, contributions, wealth_paths = simulate_salary_model(
@@ -485,11 +531,18 @@ with st.spinner("Running Monte Carlo simulation..."):
     # Decumulation — each sim's ending portfolio seeds its own drawdown on the
     # continuation of the same AR(1) path.
     decum_paths, joint_success = simulate_decumulation_paths(
-        portfolios, annual_draws, retirement_years, ret_growth
+        portfolios, annual_draws, retirement_years, ret_growth, legacy_target
     )
 
-    logger.info("required_salary=$%s target_portfolio(median)=$%s joint_success=%s",
-                f"{required_salary:,.0f}", f"{target_portfolio:,.0f}", f"{joint_success:.1%}")
+    # Survival rate is always fraction ending above $0, regardless of legacy goal.
+    # When legacy_target=0 this equals joint_success; otherwise it is higher.
+    survival_rate = float(np.mean(decum_paths[:, -1] > 0))
+
+    logger.info(
+        "required_salary=$%s target_portfolio(median)=$%s joint_success=%s survival_rate=%s",
+        f"{required_salary:,.0f}", f"{target_portfolio:,.0f}",
+        f"{joint_success:.1%}", f"{survival_rate:.1%}",
+    )
 
 years_axis  = list(range(years + 1))
 contrib_x   = years_axis[1:]
@@ -500,20 +553,25 @@ retire_axis = list(range(years, years + retirement_years + 1))
 # -----------------------------
 
 st.subheader("Results")
-m1, m2, m3 = st.columns(3)
-with m1:
-    st.metric("Required Starting Salary", f"${required_salary:,.0f}")
-with m2:
-    st.metric(
-        "Median Portfolio at Retirement", f"${target_portfolio:,.0f}",
-        help="Median ending portfolio across all simulations at the solved salary. "
-             "Display only — the solver optimizes joint success, not this value."
-    )
-with m3:
-    st.metric(
-        "Joint Success Rate", f"{joint_success:.1%}",
-        help="Fraction of simulations that both accumulate enough and sustain the full "
-             "retirement drawdown. This is the single target the solver optimizes against."
+
+cols = st.columns(4 if legacy_target > 0 else 3)
+
+cols[0].metric("Required Starting Salary", f"${required_salary:,.0f}")
+cols[1].metric(
+    "Median Portfolio at Retirement", f"${target_portfolio:,.0f}",
+    help="Median ending accumulation portfolio across all simulations. Display only."
+)
+cols[2].metric(
+    "Portfolio Survival Rate", f"{survival_rate:.1%}",
+    help="Fraction of simulations where the portfolio is not fully depleted by end of retirement."
+)
+
+if legacy_target > 0:
+    cols[3].metric(
+        f"Legacy Success (≥ ${legacy_target/1e6:.1f}M)",
+        f"{joint_success:.1%}",
+        help=f"Fraction of simulations ending retirement with at least ${legacy_target:,.0f}. "
+             f"This is the target the solver optimizes against."
     )
 
 st.divider()
@@ -571,8 +629,13 @@ fig_timeline.add_vline(
 )
 fig_timeline.add_hline(
     y=target_portfolio, line_dash="dot", line_color="red", opacity=0.5,
-    annotation_text=f"Target ${target_portfolio/1e6:.1f}M", annotation_font_size=11,
+    annotation_text=f"Median ${target_portfolio/1e6:.1f}M", annotation_font_size=11,
 )
+if legacy_target > 0:
+    fig_timeline.add_hline(
+        y=legacy_target, line_dash="dot", line_color="green", opacity=0.6,
+        annotation_text=f"Legacy ${legacy_target/1e6:.1f}M", annotation_font_size=11,
+    )
 fig_timeline.update_layout(
     xaxis_title="Year",
     yaxis_title="Portfolio Value",
@@ -654,6 +717,11 @@ with r2c1:
     ))
     fig_decum.add_hline(y=0, line_color="red", opacity=0.3,
                         annotation_text="Depleted", annotation_font_size=11)
+    if legacy_target > 0:
+        fig_decum.add_hline(
+            y=legacy_target, line_color="green", opacity=0.5,
+            annotation_text=f"Legacy ${legacy_target/1e6:.1f}M", annotation_font_size=11,
+        )
     fig_decum.update_layout(
         title="Retirement Drawdown Paths",
         xaxis_title="Year", yaxis_title="Portfolio Value",
