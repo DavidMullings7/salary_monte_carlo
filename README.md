@@ -24,7 +24,7 @@ When a legacy goal is set, the success condition is `ending portfolio ≥ legacy
 
 ### Return Model
 
-A **single AR(1) lognormal process** spans the full horizon (accumulation years + retirement years) and is split at the retirement date. The unconditional mean shifts at retirement to reflect a different asset allocation (e.g. more conservative), while the innovation structure — volatility, autocorrelation, and the latent market state — remains continuous across the boundary. A single seed controls the full path set for reproducibility.
+A **single AR(1) lognormal process** spans the full horizon (accumulation years + retirement years) and is split at the retirement date. Both the unconditional mean and volatility shift at retirement to reflect a different asset allocation (e.g. lower-return, lower-volatility). The AR(1) autocorrelation structure and latent market state remain continuous across the boundary. A single seed controls the full path set for reproducibility.
 
 ## Inputs
 
@@ -70,8 +70,9 @@ A **single AR(1) lognormal process** spans the full horizon (accumulation years 
 | Parameter | Description |
 | --- | --- |
 | Accum. Return | Expected mean annual return during the accumulation phase. |
+| Accum. Volatility (σ) | Annualized standard deviation of log returns during accumulation. |
 | Retirement Return | Expected mean annual return during the retirement drawdown phase. Typically lower, reflecting a more conservative allocation. |
-| Volatility (σ) | Annualized standard deviation of log returns. Applied across both phases. |
+| Retire Volatility (σ) | Annualized standard deviation of log returns during retirement. Typically lower than accumulation volatility, reflecting a more conservative allocation. |
 | Salary Growth | Annual salary growth rate. |
 
 ### Tax & Plan Settings
@@ -148,7 +149,7 @@ This increases the required portfolio relative to immediate SS, with the magnitu
 - The model assumes 100% of after-tax surplus above spending is invested
 - Social Security is modeled as a fixed flat amount starting at a fixed year; COLA adjustments are not modeled
 - State income taxes are not modeled
-- Volatility (σ) is shared across both phases; only the mean return shifts at retirement
+- Volatility (σ) can differ between phases but is constant within each phase
 - Inheritance is treated as a certain event in a known year; probability of receipt is not modeled
 - The 401k limit, HSA limit, and tax brackets reflect current law and will need updating over time
 

@@ -140,7 +140,7 @@ def generate_return_paths(years, mean_return, return_std, phi=-0.15):
 
 
 def generate_joint_return_paths(accum_years, retire_years, accum_mean, retire_mean,
-                                 return_std, phi=-0.15):
+                                 accum_std, retire_std, phi=-0.15):
     """Generate a single AR(1) process spanning accumulation and retirement, then split.
 
     Using one continuous process means the market state at the retirement boundary
@@ -149,9 +149,9 @@ def generate_joint_return_paths(accum_years, retire_years, accum_mean, retire_me
     at the transition. Two independently seeded draws would miss this correlation
     entirely.
 
-    The unconditional mean shifts at year accum_years (e.g. from a growth-oriented
-    portfolio to a more conservative one), while the innovation structure — volatility,
-    autocorrelation, and the latent state — remains continuous.
+    The unconditional mean and volatility both shift at year accum_years to reflect
+    a different asset allocation in retirement. The AR(1) autocorrelation structure
+    and latent state remain continuous across the boundary.
 
     Returns:
         accum_growth: (SIMULATIONS, accum_years)
@@ -160,23 +160,28 @@ def generate_joint_return_paths(accum_years, retire_years, accum_mean, retire_me
     accum_years = int(accum_years)
     retire_years = int(retire_years)
     total_years = accum_years + retire_years
-    noise_std = return_std * np.sqrt(1 - phi ** 2)
 
-    log_mean_accum  = np.log(1 + accum_mean)  - 0.5 * return_std ** 2
-    log_mean_retire = np.log(1 + retire_mean) - 0.5 * return_std ** 2
+    # Per-period volatility vector
+    stds = np.empty(total_years)
+    stds[:accum_years] = accum_std
+    stds[accum_years:] = retire_std
 
-    # Per-period mean vector: accumulation mean for first accum_years, then retirement mean
+    log_mean_accum  = np.log(1 + accum_mean)  - 0.5 * accum_std ** 2
+    log_mean_retire = np.log(1 + retire_mean) - 0.5 * retire_std ** 2
+
+    # Per-period mean vector
     log_means = np.empty(total_years)
     log_means[:accum_years]  = log_mean_accum
     log_means[accum_years:]  = log_mean_retire
 
     log_returns = np.zeros((SIMULATIONS, total_years))
-    log_returns[:, 0] = np.random.normal(log_means[0], return_std, SIMULATIONS)
+    log_returns[:, 0] = np.random.normal(log_means[0], stds[0], SIMULATIONS)
 
     for t in range(1, total_years):
+        noise_std = stds[t] * np.sqrt(1 - phi ** 2)
         noise = np.random.normal(0, noise_std, SIMULATIONS)
         # AR(1): deviation is measured against the mean of the *previous* period so
-        # the autocorrelation term is well-defined even when the mean shifts at t=accum_years.
+        # the autocorrelation term is well-defined even when mean/std shift at t=accum_years.
         log_returns[:, t] = log_means[t] + phi * (log_returns[:, t-1] - log_means[t-1]) + noise
 
     growth = np.exp(log_returns)
@@ -350,12 +355,12 @@ def _sensitivity_salary(overrides, base_params, base_accum_growth, base_ret_grow
     p["ss_start_year"] = int(p["ss_start_year"])
     if p["inheritance_year"] is not None:
         p["inheritance_year"] = min(int(p["inheritance_year"]), p["years"])
-    path_keys = {"mean_return", "retirement_return", "return_std", "years", "retirement_years"}
+    path_keys = {"mean_return", "retirement_return", "accum_std", "retire_std", "years", "retirement_years"}
     if path_keys & set(overrides):
         np.random.seed(42)
         ag, rg = generate_joint_return_paths(
             p["years"], p["retirement_years"],
-            p["mean_return"], p["retirement_return"], p["return_std"],
+            p["mean_return"], p["retirement_return"], p["accum_std"], p["retire_std"],
         )
     else:
         ag, rg = base_accum_growth, base_ret_growth
@@ -429,7 +434,7 @@ with st.sidebar:
     # Legacy Goal
     st.subheader("Legacy Goal")
     enable_legacy = st.checkbox("Set a legacy goal")
-    legacy_target = st.number_input("Legacy Goal ($)", 0, 10_000_000, 500_000, step=50_000) if enable_legacy else 0
+    legacy_target = st.number_input("Legacy Goal ($)", 0, 10_000_000, 1_000_000, step=50_000) if enable_legacy else 0
 
     st.divider()
 
@@ -452,11 +457,12 @@ with st.sidebar:
     st.subheader("Market")
     mc1, mc2 = st.columns(2)
     with mc1:
-        mean_return       = st.slider("Accumulation Return",     0.0, 10.0, 3.5, step=0.5, format="%.1f%%") / 100
-        return_std        = st.slider("Volatility (σ)",    0,   30,   18,             format="%d%%")   / 100
+        mean_return       = st.slider("Accumulation Return",    0.0, 10.0, 3.5, step=0.5, format="%.1f%%") / 100
+        accum_std         = st.slider("Accum. Volatility (σ)",  0,   30,   18,             format="%d%%")   / 100
+        salary_growth     = st.slider("Salary Growth",          0.0, 10.0,  1.5, step=0.5, format="%.1f%%") / 100
     with mc2:
-        retirement_return = st.slider("Retirement Return", 0.0, 10.0,  4.0, step=0.5, format="%.1f%%") / 100
-        salary_growth     = st.slider("Salary Growth",     0.0, 10.0,  1.5, step=0.5, format="%.1f%%") / 100
+        retirement_return = st.slider("Retirement Return",      0.0, 10.0,  2.5, step=0.5, format="%.1f%%") / 100
+        retire_std        = st.slider("Retire Volatility (σ)",  0,   30,   10,             format="%d%%")   / 100
 
     st.divider()
 
@@ -524,12 +530,12 @@ logger.info(
     "Inputs | monthly_retirement_spend=$%s retirement_years=%s "
     "social_security_monthly=$%s ss_start_year=%s partner_income=$%s years=%s spending=$%s "
     "current_portfolio=$%s salary_growth=%s match_rate=%s inheritance=$%s inheritance_year=%s "
-    "legacy_target=$%s",
+    "legacy_target=$%s accum_std=%s retire_std=%s",
     f"{monthly_retirement_spend:,.0f}", retirement_years,
     f"{social_security_monthly:,.0f}", ss_start_year, f"{partner_income:,.0f}", years,
     f"{spending:,.0f}", f"{current_portfolio:,.0f}", f"{salary_growth:.2%}",
     f"{match_rate:.2%}", f"{inheritance:,.0f}", inheritance_year,
-    f"{legacy_target:,.0f}",
+    f"{legacy_target:,.0f}", f"{accum_std:.0%}", f"{retire_std:.0%}",
 )
 
 with st.spinner("Running Monte Carlo simulation..."):
@@ -537,7 +543,7 @@ with st.spinner("Running Monte Carlo simulation..."):
     # One AR(1) process spanning both phases, split at retirement.
     np.random.seed(42)
     accum_growth, ret_growth = generate_joint_return_paths(
-        years, retirement_years, mean_return, retirement_return, return_std
+        years, retirement_years, mean_return, retirement_return, accum_std, retire_std
     )
 
     # Draw schedule: higher before Social Security begins, lower once it does.
@@ -817,7 +823,8 @@ _base_params = dict(
     inheritance_year=inheritance_year,
     mean_return=mean_return,
     retirement_return=retirement_return,
-    return_std=return_std,
+    accum_std=accum_std,
+    retire_std=retire_std,
     target_success=target_success,
     legacy_target=legacy_target,
 )
@@ -827,7 +834,8 @@ _cases: list[tuple[str, str, float, float, str]] = [
     ("Monthly Spend",     "monthly_retirement_spend", max(0.0, monthly_retirement_spend - 1_500), monthly_retirement_spend + 1_500, "±$1,500/mo"),
     ("Accum. Return",     "mean_return",              max(0.0, mean_return - 0.01),               mean_return + 0.01,               "±1 pp"),
     ("Retirement Return", "retirement_return",        max(0.0, retirement_return - 0.01),         retirement_return + 0.01,         "±1 pp"),
-    ("Volatility (σ)",    "return_std",               max(0.0, return_std - 0.05),                return_std + 0.05,                "±5 pp"),
+    ("Accum. Volatility",  "accum_std",               max(0.0, accum_std - 0.05),                 accum_std + 0.05,                 "±5 pp"),
+    ("Retire Volatility",  "retire_std",              max(0.0, retire_std - 0.05),                 retire_std + 0.05,                "±5 pp"),
     ("Years to Retire",   "years",                    float(max(5, years - 5)),                   float(years + 5),                 "±5 yrs"),
     ("Current Portfolio", "current_portfolio",        max(0.0, current_portfolio - 100_000),      current_portfolio + 100_000,      "±$100k"),
     ("Partner Income",    "partner_income",            max(0.0, partner_income - 50_000),          partner_income + 50_000,          "±$50k"),
