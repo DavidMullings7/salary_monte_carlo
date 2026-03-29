@@ -354,21 +354,21 @@ with st.sidebar:
     st.subheader("Household")
     partner_income    = st.number_input("Partner Income ($)",           0, 1_000_000, 300_000, step=5_000)
     spending          = st.number_input("Working-Years Spending ($/yr)", 0,   500_000,  50_000, step=1_000)
-    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, 250_000, step=10_000)
+    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, 240_000, step=10_000)
 
     st.divider()
 
     # Retirement Income Goal — the primary input
     st.subheader("Retirement Income Goal")
     monthly_retirement_spend = st.number_input(
-        "Monthly Spend in Retirement ($)", 0, 50_000, 8_000, step=500,
+        "Monthly Spend in Retirement ($)", 0, 50_000, 9_000, step=500,
         help="Target monthly spending once retired, in today's dollars."
     )
     rc1, rc2 = st.columns(2)
     with rc1:
-        retirement_years = st.slider("Years in Retirement", 10, 50, 30)
+        retirement_years = st.slider("Years in Retirement", 10, 50, 40)
         target_survival_rate = st.slider(
-            "Portfolio Survival Rate", 50, 99, 90, format="%d%%",
+            "Portfolio Survival Rate", 50, 99, 75, format="%d%%",
             help="Probability that the portfolio lasts the full retirement. "
                  "Higher values require a larger portfolio, accounting for sequence-of-returns risk."
         ) / 100
@@ -382,7 +382,7 @@ with st.sidebar:
             st.caption("SS Delay (years) is ignored when Social Security monthly benefit is $0.")
         else:
             ss_start_year = st.number_input(
-                "SS Delay (years)", 0, retirement_years, 5, step=1,
+                "SS Delay (years)", 0, retirement_years, 20, step=1,
                 help="Years after retirement before Social Security begins. "
                      "During this gap the full monthly spend is drawn from the portfolio."
             )
@@ -405,7 +405,12 @@ with st.sidebar:
     with ic1:
         inheritance = st.number_input("Amount ($)", 0, 10_000_000, 1_500_000, step=50_000)
     with ic2:
-        inheritance_year = st.number_input("Year", 1, years, years)
+        # inheritance_year = st.number_input("Year", 1, years, years)
+        if inheritance == 0:
+            inheritance_year = 0
+            st.caption("Inheritance year is ignored when inheritance is $0.")
+        else:
+            inheritance_year = st.number_input("Year", 1, years, years, help="The year in which the inheritance is received.")
 
     st.divider()
 
@@ -413,11 +418,11 @@ with st.sidebar:
     st.subheader("Market")
     mc1, mc2 = st.columns(2)
     with mc1:
-        mean_return       = st.slider("Accum. Return",     0.0, 15.0, 7.0, step=0.5, format="%.1f%%") / 100
-        return_std        = st.slider("Volatility (σ)",    0,   30,   15,             format="%d%%")   / 100
+        mean_return       = st.slider("Accum. Return",     0.0, 15.0, 4.0, step=0.5, format="%.1f%%") / 100
+        return_std        = st.slider("Volatility (σ)",    0,   30,   18,             format="%d%%")   / 100
     with mc2:
-        retirement_return = st.slider("Retirement Return", 0.0, 10.0,  5.0, step=0.5, format="%.1f%%") / 100
-        salary_growth     = st.slider("Salary Growth",     0.0, 10.0,  2.0, step=0.5, format="%.1f%%") / 100
+        retirement_return = st.slider("Retirement Return", 0.0, 10.0,  4.0, step=0.5, format="%.1f%%") / 100
+        salary_growth     = st.slider("Salary Growth",     0.0, 10.0,  1.5, step=0.5, format="%.1f%%") / 100
 
     st.divider()
 
