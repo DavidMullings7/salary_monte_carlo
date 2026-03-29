@@ -157,6 +157,8 @@ def generate_joint_return_paths(accum_years, retire_years, accum_mean, retire_me
         accum_growth: (SIMULATIONS, accum_years)
         retire_growth: (SIMULATIONS, retire_years)
     """
+    accum_years = int(accum_years)
+    retire_years = int(retire_years)
     total_years = accum_years + retire_years
     noise_std = return_std * np.sqrt(1 - phi ** 2)
 
@@ -331,6 +333,45 @@ def solve_required_salary(
         )
 
     return float(brentq(objective, lo, hi))  # type: ignore[arg-type]
+
+# -----------------------------
+# SENSITIVITY HELPER
+# -----------------------------
+
+def _sensitivity_salary(overrides, base_params, base_accum_growth, base_ret_growth):
+    """Solve required salary with one parameter overridden.
+
+    Reuses precomputed return paths when the override does not affect path
+    generation (i.e. non-return, non-horizon parameters). Regenerates paths
+    with seed 42 otherwise so results are comparable across cases."""
+    p = {**base_params, **overrides}
+    p["years"] = int(p["years"])
+    p["retirement_years"] = int(p["retirement_years"])
+    p["ss_start_year"] = int(p["ss_start_year"])
+    if p["inheritance_year"] is not None:
+        p["inheritance_year"] = min(int(p["inheritance_year"]), p["years"])
+    path_keys = {"mean_return", "retirement_return", "return_std", "years", "retirement_years"}
+    if path_keys & set(overrides):
+        np.random.seed(42)
+        ag, rg = generate_joint_return_paths(
+            p["years"], p["retirement_years"],
+            p["mean_return"], p["retirement_return"], p["return_std"],
+        )
+    else:
+        ag, rg = base_accum_growth, base_ret_growth
+    draws = make_annual_draws(
+        p["monthly_retirement_spend"], p["social_security_monthly"],
+        p["ss_start_year"], p["retirement_years"],
+    )
+    try:
+        return solve_required_salary(
+            p["partner_income"], p["years"], p["spending"], p["current_portfolio"],
+            p["salary_growth"], p["match_rate"], p["target_success"],
+            p["inheritance"], p["inheritance_year"],
+            ag, draws, p["retirement_years"], rg, p["legacy_target"],
+        )
+    except ValueError:
+        return None
 
 # ==============================
 # STREAMLIT UI
@@ -747,3 +788,120 @@ with r2c2:
         height=380,
     )
     st.plotly_chart(fig3, use_container_width=True)
+
+st.divider()
+
+# -----------------------------
+# SENSITIVITY ANALYSIS
+# -----------------------------
+
+st.subheader("Sensitivity Analysis")
+st.caption(
+    "Required starting salary when one input is shifted by a fixed step. "
+    "Blue = salary goes down (favorable); orange = salary goes up (unfavorable). "
+    "Sorted by total swing."
+)
+
+_base_params = dict(
+    monthly_retirement_spend=monthly_retirement_spend,
+    retirement_years=retirement_years,
+    social_security_monthly=social_security_monthly,
+    ss_start_year=int(ss_start_year),
+    partner_income=partner_income,
+    years=years,
+    spending=spending,
+    current_portfolio=current_portfolio,
+    salary_growth=salary_growth,
+    match_rate=match_rate,
+    inheritance=inheritance,
+    inheritance_year=inheritance_year,
+    mean_return=mean_return,
+    retirement_return=retirement_return,
+    return_std=return_std,
+    target_success=target_success,
+    legacy_target=legacy_target,
+)
+
+# (display label, param key, low override value, high override value, step label)
+_cases: list[tuple[str, str, float, float, str]] = [
+    ("Monthly Spend",     "monthly_retirement_spend", max(0.0, monthly_retirement_spend - 1_500), monthly_retirement_spend + 1_500, "±$1,500/mo"),
+    ("Accum. Return",     "mean_return",              max(0.0, mean_return - 0.01),               mean_return + 0.01,               "±1 pp"),
+    ("Retirement Return", "retirement_return",        max(0.0, retirement_return - 0.01),         retirement_return + 0.01,         "±1 pp"),
+    ("Volatility (σ)",    "return_std",               max(0.0, return_std - 0.05),                return_std + 0.05,                "±5 pp"),
+    ("Years to Retire",   "years",                    float(max(5, years - 5)),                   float(years + 5),                 "±5 yrs"),
+    ("Current Portfolio", "current_portfolio",        max(0.0, current_portfolio - 100_000),      current_portfolio + 100_000,      "±$100k"),
+    ("Partner Income",    "partner_income",            max(0.0, partner_income - 50_000),          partner_income + 50_000,          "±$50k"),
+    ("Salary Growth",     "salary_growth",            max(0.0, salary_growth - 0.01),             salary_growth + 0.01,             "±1 pp"),
+    ("Working Spending",  "spending",                 max(0.0, spending - 10_000),                spending + 10_000,                "±$10k/yr"),
+]
+if social_security_monthly > 0:
+    _cases.append(("Social Security", "social_security_monthly",
+                   max(0.0, social_security_monthly - 1_000), social_security_monthly + 1_000, "±$1,000/mo"))
+if ss_start_year > 0:
+    _cases.append(("SS Delay", "ss_start_year",
+                   float(max(0, ss_start_year - 5)), float(min(retirement_years, ss_start_year + 5)), "±5 yrs"))
+if legacy_target > 0:
+    _cases.append(("Legacy Goal", "legacy_target",
+                   max(0.0, legacy_target - 250_000), legacy_target + 250_000, "±$250k"))
+
+with st.spinner("Computing sensitivity..."):
+    _rows = []
+    for _lbl, _key, _lo_val, _hi_val, _step_lbl in _cases:
+        _s_lo = _sensitivity_salary({_key: _lo_val}, _base_params, accum_growth, ret_growth)
+        _s_hi = _sensitivity_salary({_key: _hi_val}, _base_params, accum_growth, ret_growth)
+        if _s_lo is not None and _s_hi is not None:
+            _rows.append((_lbl, _s_lo, _s_hi, abs(_s_hi - _s_lo), _step_lbl))
+
+_rows.sort(key=lambda r: r[3], reverse=True)
+
+if _rows:
+    _ylabels  = [f"{r[0]}<br><sup>{r[4]}</sup>" for r in _rows]
+    _sal_mins = [min(r[1], r[2]) for r in _rows]
+    _sal_maxs = [max(r[1], r[2]) for r in _rows]
+
+    # Favorable portion: sal_min → baseline (blue)
+    _fav_base  = _sal_mins
+    _fav_width = [max(0.0, required_salary - s) for s in _sal_mins]
+    # Unfavorable portion: baseline → sal_max (orange)
+    _bad_width = [max(0.0, s - required_salary) for s in _sal_maxs]
+
+    _hover_fav = [
+        f"<b>{r[0]}</b> ({r[4]})<br>Favorable end: ${min(r[1],r[2]):,.0f}<br>Swing: ${r[3]:,.0f}"
+        for r in _rows
+    ]
+    _hover_bad = [
+        f"<b>{r[0]}</b> ({r[4]})<br>Unfavorable end: ${max(r[1],r[2]):,.0f}<br>Swing: ${r[3]:,.0f}"
+        for r in _rows
+    ]
+
+    fig_tornado = go.Figure()
+    fig_tornado.add_trace(go.Bar(
+        y=_ylabels, x=_fav_width, base=_fav_base,
+        orientation="h",
+        marker_color=BLUE, opacity=0.75,
+        name="Favorable",
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=_hover_fav,
+    ))
+    fig_tornado.add_trace(go.Bar(
+        y=_ylabels, x=_bad_width, base=[required_salary] * len(_rows),
+        orientation="h",
+        marker_color=ORANGE, opacity=0.75,
+        name="Unfavorable",
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=_hover_bad,
+    ))
+    fig_tornado.add_vline(
+        x=required_salary, line_dash="dash", line_color="black", opacity=0.6,
+        annotation_text=f"Baseline ${required_salary:,.0f}",
+        annotation_position="top right",
+    )
+    fig_tornado.update_layout(
+        barmode="overlay",
+        xaxis_title="Required Starting Salary",
+        xaxis=dict(tickprefix="$", tickformat=",.0f"),
+        yaxis=dict(autorange="reversed"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=80 + 36 * len(_rows),
+    )
+    st.plotly_chart(fig_tornado, use_container_width=True)
