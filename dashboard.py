@@ -233,17 +233,21 @@ def make_annual_draws(monthly_spend, social_security_monthly, ss_start_year, ret
     return draws
 
 
-def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_years, ret_growth, legacy_target):
+def simulate_decumulation_paths(starting_portfolios, annual_draws, retirement_years, ret_growth, legacy_target,
+                                inheritance=0, inheritance_retire_year=None):
     """Monte Carlo drawdown using pre-generated return paths.
     Each simulation uses its own ending accumulation value as the starting portfolio.
     annual_draws is a (retirement_years,) array of per-year withdrawals, allowing
     the draw to vary (e.g. higher before Social Security begins).
+    inheritance_retire_year is 1-based: 1 = end of first retirement year.
     Returns wealth_paths (SIMULATIONS, retirement_years+1) and the portfolio survival rate."""
     sims = len(starting_portfolios)
     wealth = np.zeros((sims, retirement_years + 1))
     wealth[:, 0] = starting_portfolios
     for y in range(retirement_years):
         wealth[:, y + 1] = np.maximum(wealth[:, y] * ret_growth[:, y] - annual_draws[y], 0)
+        if inheritance_retire_year is not None and y + 1 == inheritance_retire_year:
+            wealth[:, y + 1] += inheritance
     
     if legacy_target > 0:
         survival_rate = float(np.mean(wealth[:, -1] >= legacy_target))
@@ -271,11 +275,11 @@ def simulate_salary_model(
     contributions = compute_contributions(salaries, partner_income, spending, match_rate)
     if contributions is None:
         return None, None, None, None
-    if inheritance_year is not None:
+    if inheritance_year is not None and inheritance_year <= years:
         contributions[inheritance_year - 1] += inheritance
     portfolios = compute_final_portfolios(current_portfolio, contributions, growth)
     wealth_paths = simulate_wealth_paths(current_portfolio, contributions, growth)
-    if inheritance_year is not None:
+    if inheritance_year is not None and inheritance_year <= years:
         contributions[inheritance_year - 1] -= inheritance
     return portfolios, salaries, contributions, wealth_paths
 
@@ -286,7 +290,7 @@ def simulate_salary_model(
 def solve_required_salary(
     partner_income, years, spending, current_portfolio,
     salary_growth, match_rate, target_success, inheritance, inheritance_year,
-    accum_growth, annual_draws, retirement_years, ret_growth, legacy_target
+    accum_growth, annual_draws, retirement_years, ret_growth, legacy_target,
 ):
     """Solve for the salary where the joint probability of accumulating enough AND
     sustaining the full retirement drawdown equals target_success.
@@ -305,8 +309,12 @@ def solve_required_salary(
         if portfolios is None:
             # Salary can't cover working-years spending; treat joint success as 0.
             return -target_success
+        retire_inh_year = (inheritance_year - years) if (
+            inheritance_year is not None and inheritance_year > years
+        ) else None
         _, joint_success = simulate_decumulation_paths(
-            portfolios, annual_draws, retirement_years, ret_growth, legacy_target
+            portfolios, annual_draws, retirement_years, ret_growth, legacy_target,
+            inheritance=inheritance, inheritance_retire_year=retire_inh_year,
         )
         return joint_success - target_success
 
@@ -354,7 +362,7 @@ def _sensitivity_salary(overrides, base_params, base_accum_growth, base_ret_grow
     p["retirement_years"] = int(p["retirement_years"])
     p["ss_start_year"] = int(p["ss_start_year"])
     if p["inheritance_year"] is not None:
-        p["inheritance_year"] = min(int(p["inheritance_year"]), p["years"])
+        p["inheritance_year"] = min(int(p["inheritance_year"]), p["years"] + p["retirement_years"])
     path_keys = {"mean_return", "retirement_return", "accum_std", "retire_std", "years", "retirement_years"}
     if path_keys & set(overrides):
         np.random.seed(42)
@@ -394,7 +402,7 @@ with st.sidebar:
     st.subheader("Household")
     partner_income    = st.number_input("Partner Income ($)",           0, 1_000_000, 300_000, step=5_000)
     spending          = st.number_input("Working-Years Spending ($/yr)", 0,   500_000,  50_000, step=1_000)
-    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, 240_000, step=10_000)
+    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, 250_000, step=10_000)
 
     st.divider()
 
@@ -449,7 +457,11 @@ with st.sidebar:
             inheritance_year = 0
             st.caption("Inheritance year is ignored when inheritance is $0.")
         else:
-            inheritance_year = st.number_input("Year", 1, years, years, help="The year in which the inheritance is received.")
+            inheritance_year = st.number_input(
+                "Year", 1, years + retirement_years, years,
+                help="The year in which the inheritance is received. "
+                     f"Years 1–{years} are accumulation; years {years + 1}–{years + retirement_years} are retirement.",
+            )
 
     st.divider()
 
@@ -577,8 +589,12 @@ with st.spinner("Running Monte Carlo simulation..."):
 
     # Decumulation — each sim's ending portfolio seeds its own drawdown on the
     # continuation of the same AR(1) path.
+    retire_inh_year = (inheritance_year - years) if (
+        inheritance_year is not None and inheritance_year > years
+    ) else None
     decum_paths, joint_success = simulate_decumulation_paths(
-        portfolios, annual_draws, retirement_years, ret_growth, legacy_target
+        portfolios, annual_draws, retirement_years, ret_growth, legacy_target,
+        inheritance=inheritance, inheritance_retire_year=retire_inh_year,
     )
 
     # Survival rate is always fraction ending above $0, regardless of legacy goal.

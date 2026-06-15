@@ -63,7 +63,7 @@ A **single AR(1) lognormal process** spans the full horizon (accumulation years 
 | Parameter | Description |
 | --- | --- |
 | Amount | Expected lump-sum inheritance in today's dollars. |
-| Year | Year within the accumulation horizon when the inheritance arrives. Hidden when amount is $0. |
+| Year | Year in the overall model when the inheritance arrives (1 = first accumulation year; years beyond the accumulation horizon fall in retirement). Hidden when amount is $0. |
 
 ### Market Assumptions
 
@@ -150,7 +150,7 @@ This increases the required portfolio relative to immediate SS, with the magnitu
 - Social Security is modeled as a fixed flat amount starting at a fixed year; COLA adjustments are not modeled
 - State income taxes are not modeled
 - Volatility (σ) can differ between phases but is constant within each phase
-- Inheritance is treated as a certain event in a known year; probability of receipt is not modeled
+- Inheritance is treated as a certain event in a known year spanning the full model horizon (accumulation + retirement); probability of receipt is not modeled. When the inheritance year falls in retirement, the lump sum is added to the portfolio at that point in the drawdown simulation.
 - The 401k limit, HSA limit, and tax brackets reflect current law and will need updating over time
 
 ## Installation
