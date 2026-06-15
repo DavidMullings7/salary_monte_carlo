@@ -391,6 +391,20 @@ def _sensitivity_salary(overrides, base_params, base_accum_growth, base_ret_grow
 # ==============================
 
 # -----------------------------
+# QUERY PARAM HELPER
+# -----------------------------
+
+def _qp(key, default, cast=None):
+    """Read a URL query parameter, cast it, and fall back to default on any error."""
+    v = st.query_params.get(key)
+    if v is None:
+        return default
+    try:
+        return cast(v) if cast else v
+    except (ValueError, TypeError):
+        return default
+
+# -----------------------------
 # SIDEBAR — all inputs
 # -----------------------------
 
@@ -400,31 +414,31 @@ with st.sidebar:
 
     # Household
     st.subheader("Household")
-    partner_income    = st.number_input("Partner Income ($)",           0, 1_000_000, 300_000, step=5_000)
-    spending          = st.number_input("Working-Years Spending ($/yr)", 0,   500_000,  50_000, step=1_000)
-    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, 250_000, step=10_000)
+    partner_income    = st.number_input("Partner Income ($)",           0, 1_000_000, _qp("partner_income", 300_000, int), step=5_000)
+    spending          = st.number_input("Working-Years Spending ($/yr)", 0,   500_000, _qp("spending", 50_000, int),       step=1_000)
+    current_portfolio = st.number_input("Current Portfolio ($)",         0, 10_000_000, _qp("current_portfolio", 250_000, int), step=10_000)
 
     st.divider()
 
     # Accumulation
     st.subheader("Accumulation")
-    years = st.slider("Years to Retirement", 5, 40, 25)
+    years = st.slider("Years to Retirement", 5, 40, _qp("years", 25, int))
 
     st.divider()
 
     # Retirement Income Goal — the primary input
     st.subheader("Retirement Income Goal")
     monthly_retirement_spend = st.number_input(
-        "Monthly Withdrawal in Retirement ($)", 0, 50_000, 9_000, step=500,
+        "Monthly Withdrawal in Retirement ($)", 0, 50_000, _qp("monthly_retirement_spend", 9_000, int), step=500,
         help="Target monthly withdrawal once retired, in today's dollars."
     )
     rc1, rc2 = st.columns(2)
     with rc1:
-        retirement_years = st.slider("Years in Retirement", 10, 50, 40)
-        target_success = st.slider("Success Rate", 50, 99, 70, format="%d%%") / 100
+        retirement_years = st.slider("Years in Retirement", 10, 50, _qp("retirement_years", 40, int))
+        target_success = st.slider("Success Rate", 50, 99, _qp("target_success_raw", 70, int), format="%d%%") / 100
     with rc2:
         social_security_monthly = st.number_input(
-            "Social Security ($/mo)", 0, 10_000, 2_500, step=100,
+            "Social Security ($/mo)", 0, 10_000, _qp("social_security_monthly", 2_500, int), step=100,
             help="Expected monthly Social Security benefit. Offsets required portfolio draw."
         )
         if social_security_monthly == 0:
@@ -432,7 +446,7 @@ with st.sidebar:
             st.caption("SS Delay (years) is ignored when Social Security monthly benefit is $0.")
         else:
             ss_start_year = st.number_input(
-                "SS Delay (years)", 0, retirement_years, 20, step=1,
+                "SS Delay (years)", 0, retirement_years, min(_qp("ss_start_year", 20, int), retirement_years), step=1,
                 help="Years after retirement before Social Security begins. "
                      "During this gap the full monthly spend is drawn from the portfolio."
             )
@@ -441,8 +455,8 @@ with st.sidebar:
 
     # Legacy Goal
     st.subheader("Legacy Goal")
-    enable_legacy = st.checkbox("Set a legacy goal")
-    legacy_target = st.number_input("Legacy Goal ($)", 0, 10_000_000, 1_000_000, step=50_000) if enable_legacy else 0
+    enable_legacy = st.checkbox("Set a legacy goal", value=_qp("enable_legacy", "0") == "1")
+    legacy_target = st.number_input("Legacy Goal ($)", 0, 10_000_000, _qp("legacy_target", 1_000_000, int), step=50_000) if enable_legacy else 0
 
     st.divider()
 
@@ -450,15 +464,15 @@ with st.sidebar:
     st.subheader("Inheritance")
     ic1, ic2 = st.columns(2)
     with ic1:
-        inheritance = st.number_input("Amount ($)", 0, 10_000_000, 1_500_000, step=50_000)
+        inheritance = st.number_input("Amount ($)", 0, 10_000_000, _qp("inheritance", 1_500_000, int), step=50_000)
     with ic2:
-        # inheritance_year = st.number_input("Year", 1, years, years)
         if inheritance == 0:
             inheritance_year = 0
             st.caption("Inheritance year is ignored when inheritance is $0.")
         else:
+            _inh_year_max = years + retirement_years
             inheritance_year = st.number_input(
-                "Year", 1, years + retirement_years, years,
+                "Year", 1, _inh_year_max, min(_qp("inheritance_year", years, int), _inh_year_max),
                 help="The year in which the inheritance is received. "
                      f"Years 1–{years} are accumulation; years {years + 1}–{years + retirement_years} are retirement.",
             )
@@ -469,12 +483,12 @@ with st.sidebar:
     st.subheader("Market")
     mc1, mc2 = st.columns(2)
     with mc1:
-        mean_return       = st.slider("Accumulation Return",    0.0, 10.0, 3.5, step=0.5, format="%.1f%%") / 100
-        accum_std         = st.slider("Accum. Volatility (σ)",  0,   30,   18,             format="%d%%")   / 100
-        salary_growth     = st.slider("Salary Growth",          0.0, 10.0,  1.5, step=0.5, format="%.1f%%") / 100
+        mean_return       = st.slider("Accumulation Return",    0.0, 10.0, _qp("mean_return_raw",      3.5, float), step=0.5, format="%.1f%%") / 100
+        accum_std         = st.slider("Accum. Volatility (σ)",  0,   30,   _qp("accum_std_raw",        18,  int),             format="%d%%")   / 100
+        salary_growth     = st.slider("Salary Growth",          0.0, 10.0, _qp("salary_growth_raw",    1.5, float), step=0.5, format="%.1f%%") / 100
     with mc2:
-        retirement_return = st.slider("Retirement Return",      0.0, 10.0,  2.5, step=0.5, format="%.1f%%") / 100
-        retire_std        = st.slider("Retire Volatility (σ)",  0,   30,   10,             format="%d%%")   / 100
+        retirement_return = st.slider("Retirement Return",      0.0, 10.0, _qp("retirement_return_raw", 2.5, float), step=0.5, format="%.1f%%") / 100
+        retire_std        = st.slider("Retire Volatility (σ)",  0,   30,   _qp("retire_std_raw",       10,  int),             format="%d%%")   / 100
 
     st.divider()
 
@@ -486,24 +500,24 @@ with st.sidebar:
         st.markdown("**401(k) & HSA**")
         p1, p2, p3 = st.columns(3)
         with p1:
-            K401_LIMIT = st.number_input("401(k) ($)", 0, 100_000, 24_500, step=500)
+            K401_LIMIT = st.number_input("401(k) ($)", 0, 100_000, _qp("k401_limit", 24_500, int), step=500)
         with p2:
-            HSA_LIMIT  = st.number_input("HSA ($)",    0,  20_000,  4_500, step=100)
+            HSA_LIMIT  = st.number_input("HSA ($)",    0,  20_000, _qp("hsa_limit",   4_500, int), step=100)
         with p3:
-            match_rate = st.slider("Match", 0, 8, 7, format="%d%%") / 100
+            match_rate = st.slider("Match", 0, 8, _qp("match_rate_raw", 7, int), format="%d%%") / 100
 
         st.markdown("**Federal Tax**")
-        STANDARD_DEDUCTION = st.number_input("Standard Deduction ($)", 0, 100_000, 30_000, step=500)
+        STANDARD_DEDUCTION = st.number_input("Standard Deduction ($)", 0, 100_000, _qp("standard_deduction", 30_000, int), step=500)
 
         st.markdown("**FICA**")
         f1, f2 = st.columns(2)
         with f1:
-            SOCIAL_SECURITY_RATE      = st.number_input("SS Rate",          0.0, 0.20,      0.062,   step=0.001, format="%.3f")
-            SOCIAL_SECURITY_WAGE_BASE = st.number_input("SS Wage Base ($)", 0,   500_000,   168_600, step=1_000)
+            SOCIAL_SECURITY_RATE      = st.number_input("SS Rate",          0.0, 0.20,    _qp("ss_rate",       0.062,   float), step=0.001, format="%.3f")
+            SOCIAL_SECURITY_WAGE_BASE = st.number_input("SS Wage Base ($)", 0,   500_000, _qp("ss_wage_base",  168_600, int),   step=1_000)
         with f2:
-            MEDICARE_RATE                 = st.number_input("Medicare Rate",       0.0, 0.10, 0.0145,  step=0.001, format="%.4f")
-            ADDITIONAL_MEDICARE_RATE      = st.number_input("Add'l Medicare Rate", 0.0, 0.10, 0.009,   step=0.001, format="%.3f")
-            ADDITIONAL_MEDICARE_THRESHOLD = st.number_input("Add'l Threshold ($)", 0, 1_000_000, 250_000, step=10_000)
+            MEDICARE_RATE                 = st.number_input("Medicare Rate",       0.0, 0.10, _qp("medicare_rate",       0.0145,  float), step=0.001, format="%.4f")
+            ADDITIONAL_MEDICARE_RATE      = st.number_input("Add'l Medicare Rate", 0.0, 0.10, _qp("add_medicare_rate",    0.009,   float), step=0.001, format="%.3f")
+            ADDITIONAL_MEDICARE_THRESHOLD = st.number_input("Add'l Threshold ($)", 0, 1_000_000, _qp("add_medicare_threshold", 250_000, int), step=10_000)
 
         st.markdown("**Bracket Thresholds** *(rates fixed)*")
         bracket_defaults = [23_850, 96_950, 206_700, 394_600, 501_050, 751_600]
@@ -514,12 +528,44 @@ with st.sidebar:
         bcols = [bl1, bl2, bl1, bl2, bl1, bl2]
         for i, (lbl, lim) in enumerate(zip(bracket_labels, bracket_defaults)):
             with bcols[i]:
-                new_limits.append(st.number_input(f"{lbl} top ($)", 0, 2_000_000, lim, step=500, key=f"bracket_{i}"))
+                new_limits.append(st.number_input(f"{lbl} top ($)", 0, 2_000_000, _qp(f"bracket_{i}", lim, int), step=500, key=f"bracket_{i}"))
         BRACKETS = list(zip(new_limits, bracket_rates[:-1])) + [(float("inf"), 0.37)]
 
     st.divider()
 
     run = st.button("▶  Solve Required Salary", use_container_width=True, type="primary")
+
+# Persist all sidebar values to the URL so the page state survives reloads.
+st.query_params.update({
+    "partner_income":           partner_income,
+    "spending":                 spending,
+    "current_portfolio":        current_portfolio,
+    "years":                    years,
+    "monthly_retirement_spend": monthly_retirement_spend,
+    "retirement_years":         retirement_years,
+    "target_success_raw":       int(target_success * 100),
+    "social_security_monthly":  social_security_monthly,
+    "ss_start_year":            ss_start_year,
+    "enable_legacy":            "1" if enable_legacy else "0",
+    "legacy_target":            legacy_target,
+    "inheritance":              inheritance,
+    "inheritance_year":         inheritance_year,
+    "mean_return_raw":          mean_return * 100,
+    "accum_std_raw":            int(accum_std * 100),
+    "salary_growth_raw":        salary_growth * 100,
+    "retirement_return_raw":    retirement_return * 100,
+    "retire_std_raw":           int(retire_std * 100),
+    "k401_limit":               K401_LIMIT,
+    "hsa_limit":                HSA_LIMIT,
+    "match_rate_raw":           int(match_rate * 100),
+    "standard_deduction":       STANDARD_DEDUCTION,
+    "ss_rate":                  SOCIAL_SECURITY_RATE,
+    "ss_wage_base":             SOCIAL_SECURITY_WAGE_BASE,
+    "medicare_rate":            MEDICARE_RATE,
+    "add_medicare_rate":        ADDITIONAL_MEDICARE_RATE,
+    "add_medicare_threshold":   ADDITIONAL_MEDICARE_THRESHOLD,
+    **{f"bracket_{i}": new_limits[i] for i in range(6)},
+})
 
 # -----------------------------
 # MAIN AREA
